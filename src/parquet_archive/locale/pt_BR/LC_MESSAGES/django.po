@@ -1,0 +1,255 @@
+# Brazilian Portuguese translation of django-parquet-archive.
+# This file is distributed under the same license as the django-parquet-archive package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: django-parquet-archive\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-09 21:02-0300\n"
+"PO-Revision-Date: 2026-10-09 21:02-0300\n"
+"Last-Translator: Victor Augusto\n"
+"Language-Team: Portuguese (Brazil)\n"
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "data source"
+msgstr "origem dos dados"
+
+msgid "Archive"
+msgstr "Backup frio"
+
+msgid "Database"
+msgstr "Banco de dados"
+
+#, python-format
+msgid "Filters unavailable in the archive were ignored: %(filters)s."
+msgstr "Filtros indisponíveis no backup frio foram ignorados: %(filters)s."
+
+#, python-format
+msgid "The archive search does not include the fields: %(fields)s."
+msgstr "A busca no backup frio não considera os campos: %(fields)s."
+
+#, python-format
+msgid ""
+"Showing %(day)s, the most recent day in the archive. Filter by %(field)s to "
+"see other days."
+msgstr ""
+"Mostrando o dia %(day)s, o mais recente do backup frio. Filtre por "
+"%(field)s para ver outros dias."
+
+#, python-format
+msgid ""
+"The archive shows up to %(max_days)s days at a time: showing %(start)s to "
+"%(end)s."
+msgstr ""
+"O backup frio mostra até %(max_days)s dias por vez: exibindo de %(start)s a "
+"%(end)s."
+
+msgid "Showing archived rows (parquet files), read-only."
+msgstr "Exibindo registros do backup frio (arquivos parquet), somente para consulta."
+
+#, python-format
+msgid "Invalid day: %(day)s."
+msgstr "Dia inválido: %(day)s."
+
+#, python-format
+msgid "Row %(pk)s not found in the archive."
+msgstr "Registro %(pk)s não encontrado no backup frio."
+
+#, python-format
+msgid "%(name)s from the archive"
+msgstr "%(name)s do backup frio"
+
+msgid "Row selection"
+msgstr "Seleção dos registros"
+
+msgid "Parquet files"
+msgstr "Arquivos parquet"
+
+msgid "Saved configuration"
+msgstr "Configuração salva"
+
+msgid "Keep for"
+msgstr "Manter por"
+
+msgid "Date fields"
+msgstr "Campos de data"
+
+msgid "Configuration"
+msgstr "Configuração"
+
+msgid "Archive the selected tables now"
+msgstr "Executar backup frio das tabelas selecionadas"
+
+msgid "No active policy selected."
+msgstr "Nenhuma configuração ativa selecionada."
+
+#, python-format
+msgid "Archiving the tables: %(tables)s"
+msgstr "Executando backup frio das tabelas: %(tables)s"
+
+msgid "Parquet archive"
+msgstr "Backup frio"
+
+msgid "Model"
+msgstr "Model"
+
+msgid ""
+"The selected rows are written to the archive and DELETED from this table."
+msgstr ""
+"Os registros selecionados são gravados no backup frio e APAGADOS desta "
+"tabela."
+
+msgid "date fields"
+msgstr "campos de data"
+
+msgid ""
+"A row is archived when any of these fields is older than the configured age."
+msgstr ""
+"O registro vai para o backup frio quando qualquer um dos campos for mais "
+"antigo que o tempo informado."
+
+msgid "Rows older than this are moved to the archive."
+msgstr "Registros mais antigos que esse tempo vão para o backup frio."
+
+msgid "Unit"
+msgstr "Unidade"
+
+msgid "Rows per file"
+msgstr "Registros por arquivo"
+
+msgid ""
+"Number of rows per parquet file. Ideally each file ends up close to 512MB."
+msgstr ""
+"Quantidade de registros por arquivo parquet. O ideal é cada arquivo ficar "
+"perto de 512MB."
+
+msgid "Daily folders by"
+msgstr "Pasta por dia de"
+
+msgid ""
+"Files go into one subfolder per day of this field (e.g. "
+"requested_at=2026-06-28), in the project time zone, and the field is always "
+"saved. Use it when rows are archived by their own date; when empty, files go "
+"straight into the model folder. Once saved it cannot be changed or cleared."
+msgstr ""
+"Os arquivos ficam em uma subpasta por dia deste campo (ex.: "
+"requested_at=2026-06-28), no fuso do projeto, e o campo é sempre salvo. Use "
+"quando os registros entram no backup frio pela própria data; vazio, os "
+"arquivos ficam direto na pasta do model. Depois de salvo não pode ser "
+"trocado nem apagado."
+
+msgid "Ordering"
+msgstr "Ordenação"
+
+msgid "Order of the rows in the parquet files."
+msgstr "Ordem dos registros nos arquivos parquet."
+
+msgid "Saved columns"
+msgstr "Campos salvos"
+
+msgid "columns"
+msgstr "campos"
+
+msgid "The primary key is always saved."
+msgstr "A chave primária é sempre salva."
+
+msgid "Choose the model to list its fields."
+msgstr "Escolha o model para listar os campos."
+
+#, python-format
+msgid ""
+"Not supported in the archive (encrypted fields, custom value objects...): "
+"%(fields)s."
+msgstr ""
+"Sem suporte no backup frio (campos criptografados, objetos de valor...): "
+"%(fields)s."
+
+#, python-format
+msgid "%(field)s (ascending)"
+msgstr "%(field)s (crescente)"
+
+#, python-format
+msgid "%(field)s (descending)"
+msgstr "%(field)s (decrescente)"
+
+msgid "Model not found in the project."
+msgstr "Model não encontrado no projeto."
+
+#, python-format
+msgid ""
+"Rows are deleted after archiving and %(model)s has relations that prevent "
+"it: %(relations)s."
+msgstr ""
+"Os registros são apagados após o backup frio e %(model)s possui relações "
+"que impedem isso: %(relations)s."
+
+#, python-format
+msgid "The primary key (%(field)s) has no type supported by the archive."
+msgstr "A chave primária (%(field)s) não tem tipo suportado no backup frio."
+
+msgid "Days"
+msgstr "Dias"
+
+msgid "Months"
+msgstr "Meses"
+
+msgid "Years"
+msgstr "Anos"
+
+msgid "created at"
+msgstr "criado em"
+
+msgid "updated at"
+msgstr "alterado em"
+
+msgid "model"
+msgstr "model"
+
+msgid "Model whose old rows are moved to the archive."
+msgstr "Model cujos registros antigos são transferidos para o backup frio."
+
+msgid "active"
+msgstr "ativo"
+
+msgid "Only active policies are run by the archive task."
+msgstr "Somente configurações ativas são executadas pela task de backup frio."
+
+msgid "configuration"
+msgstr "configuração"
+
+msgid ""
+"Dict consumed by the archive task: rows_per_file, filter, ordering and "
+"schema."
+msgstr ""
+"Dict consumido pela task de backup frio: rows_per_file, filter, ordering e "
+"schema."
+
+msgid "archive policy"
+msgstr "configuração de backup frio"
+
+msgid "archive policies"
+msgstr "configurações de backup frio"
+
+#, python-format
+msgid "%(model)s (relation %(field)s)"
+msgstr "%(model)s (relação %(field)s)"
+
+msgid "Home"
+msgstr "Início"
+
+msgid "archive"
+msgstr "backup frio"
+
+msgid ""
+"Row read from the archive (parquet file). It no longer exists in the "
+"database and cannot be changed."
+msgstr ""
+"Registro lido do backup frio (arquivo parquet). Ele não existe mais no "
+"banco e não pode ser alterado."
+
+msgid "Back"
+msgstr "Voltar"

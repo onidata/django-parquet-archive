@@ -1,0 +1,34 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{{ changelist_url }}">{{ opts.verbose_name_plural|capfirst }} ({% translate 'archive' %})</a>
+    &rsaquo; {{ subtitle }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <p>{% translate 'Row read from the archive (parquet file). It no longer exists in the database and cannot be changed.' %}</p>
+    <div class="module">
+        <table style="width: 100%;">
+            <tbody>
+            {% for name, value in fields %}
+                <tr>
+                    <th style="width: 20%;">{{ name|capfirst }}</th>
+                    <td style="white-space: pre-wrap; word-break: break-word;">{{ value }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="submit-row">
+        <a href="{{ changelist_url }}" class="button" style="padding: 10px 15px;">{% translate 'Back' %}</a>
+    </div>
+</div>
+{% endblock %}

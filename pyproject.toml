@@ -1,0 +1,64 @@
+[project]
+name = "django-parquet-archive"
+version = "0.1.0"
+description = "Archive old Django table rows to parquet files, configured and browsable from the admin"
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+keywords = ["django", "parquet", "archive", "polars", "admin", "s3"]
+requires-python = ">=3.10"
+classifiers = [
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "Django>=5.2",
+    "celery>=5.5",
+    "polars>=1.36",
+    "python-dateutil>=2.8",
+]
+
+[project.urls]
+Repository = "https://github.com/victoraugusto6/django-parquet-archive"
+Issues = "https://github.com/victoraugusto6/django-parquet-archive/issues"
+
+[project.optional-dependencies]
+s3 = ["django-storages[s3]>=1.14"]
+
+[dependency-groups]
+dev = [
+    "flake8>=7.4",
+    "freezegun>=1.5",
+    "parameterized>=0.9",
+    "pytest>=8.0",
+    "pytest-django>=4.9",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/parquet_archive"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = [".", "src"]
+python_files = ["test_*.py"]
+addopts = "-p no:cacheprovider"
+# NOTE: Django deprecations caused by the library code break the suite, so the CI of each version reports them
+filterwarnings = [
+    "error::DeprecationWarning:parquet_archive",
+    "error::PendingDeprecationWarning:parquet_archive",
+]
