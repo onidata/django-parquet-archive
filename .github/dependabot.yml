@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # NOTE: Only the lock file: the ranges in pyproject.toml are the minimum versions the library supports
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    versioning-strategy: lockfile-only
+    groups:
+      uv:
+        patterns: ["*"]
