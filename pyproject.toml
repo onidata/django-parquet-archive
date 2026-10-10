@@ -5,19 +5,25 @@ description = "Archive old Django table rows to parquet files, configured and br
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
+authors = [{ name = "Victor Augusto" }]
 keywords = ["django", "parquet", "archive", "polars", "admin", "s3"]
 requires-python = ">=3.10"
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
     "Framework :: Django",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",
     "Framework :: Django :: 6.1",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
 ]
 dependencies = [
     "Django>=5.2",
@@ -29,6 +35,7 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/victoraugusto6/django-parquet-archive"
 Issues = "https://github.com/victoraugusto6/django-parquet-archive/issues"
+Changelog = "https://github.com/victoraugusto6/django-parquet-archive/releases"
 
 [project.optional-dependencies]
 s3 = ["django-storages[s3]>=1.14"]
