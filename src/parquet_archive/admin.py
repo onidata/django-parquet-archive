@@ -53,7 +53,7 @@ class DataSourceFilter(admin.SimpleListFilter):
     """
 
     title = gettext_lazy('data source')
-    parameter_name = 'source'
+    parameter_name = 'data_source'
     ARCHIVE = 'archive'
 
     def lookups(self, request, model_admin):
