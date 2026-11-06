@@ -191,11 +191,10 @@ Django deprecation caused by the library code fails the suite.
 
 ### Releasing
 
-Bump `version` in `pyproject.toml` and create the `v<version>` tag. The
-`publish` workflow checks that the tag matches the version, builds and
-publishes to PyPI with trusted publishing, with no token stored in the
-repository, and creates the GitHub release with the commits since the
-previous tag.
+Bump `version` in `pyproject.toml` and publish a GitHub release with the
+`v<version>` tag. The `publish` workflow checks that the tag matches the
+version, builds and publishes to PyPI with trusted publishing, with no token
+stored in the repository, and attaches the distributions to the release.
 
 ## License
 

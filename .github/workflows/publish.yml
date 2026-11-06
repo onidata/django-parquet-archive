@@ -1,12 +1,12 @@
 name: publish
 
-# Publishes to PyPI on every v* tag push, with trusted publishing (OIDC): no
-# token is stored in the repository. The workflow and the "pypi" environment must
-# be registered as a trusted publisher in the PyPI project. Then creates the
-# GitHub release of the tag, with the commits since the previous tag.
+# Publishes to PyPI on every published GitHub release, with trusted publishing
+# (OIDC): no token is stored in the repository. The workflow and the "pypi"
+# environment must be registered as a trusted publisher in the PyPI project. Then
+# attaches the built distributions to the release.
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -60,32 +60,15 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # required to create the release
+      contents: write   # required to upload the release assets
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
       - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
 
-      - name: Create the GitHub release
+      - name: Attach the distributions to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          previous="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
-          {
-            echo "## Changes"
-            echo
-            git log --reverse --format='- %s' "${previous:+${previous}..}${GITHUB_REF_NAME}" | grep -v '^- Bump version to ' || true
-            echo
-            echo "**PyPI:** https://pypi.org/project/django-parquet-archive/${version}/"
-            if [ -n "${previous}" ]; then
-              echo
-              echo "**Full Changelog:** ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${previous}...${GITHUB_REF_NAME}"
-            fi
-          } > notes.md
-          gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --title "${GITHUB_REF_NAME}" --notes-file notes.md
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/*
