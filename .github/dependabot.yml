@@ -14,6 +14,10 @@ updates:
     schedule:
       interval: monthly
     versioning-strategy: lockfile-only
+    # NOTE: The lock resolves Django 5.2 below Python 3.12 and Django 6 above it, and Dependabot collapses
+    # both into Django 5.2. Update it by hand with `uv lock --upgrade-package django`
+    ignore:
+      - dependency-name: django
     groups:
       uv:
         patterns: ["*"]
