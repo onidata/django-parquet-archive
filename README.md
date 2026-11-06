@@ -3,7 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/django-parquet-archive?logo=pypi&logoColor=white)](https://pypi.org/project/django-parquet-archive/)
 [![Python](https://img.shields.io/pypi/pyversions/django-parquet-archive?logo=python&logoColor=white)](https://pypi.org/project/django-parquet-archive/)
 [![Django](https://img.shields.io/pypi/frameworkversions/django/django-parquet-archive?logo=django&logoColor=white&label=django)](https://pypi.org/project/django-parquet-archive/)
-[![CI](https://github.com/victoraugusto6/django-parquet-archive/actions/workflows/ci.yml/badge.svg)](https://github.com/victoraugusto6/django-parquet-archive/actions/workflows/ci.yml)
+[![CI](https://github.com/onidata/django-parquet-archive/actions/workflows/ci.yml/badge.svg)](https://github.com/onidata/django-parquet-archive/actions/workflows/ci.yml)
 [![License](https://img.shields.io/pypi/l/django-parquet-archive)](LICENSE)
 
 Archive old rows of Django tables: they are written to parquet files (S3 or
