@@ -44,6 +44,9 @@ STORAGES['parquet_archive'] = {
     'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
     'OPTIONS': {'bucket_name': 'my-archive-bucket'},
 }
+
+# Optional: files an admin page with a search or other filters reads at most (default 200)
+PARQUET_ARCHIVE_MAX_FILES = 200
 ```
 
 Schedule it with celery beat (the queue and the frequency are up to the project):
@@ -68,12 +71,12 @@ model:
 - **Date fields**: a row is archived when any of them is older than the
   configured age. Includes fields of direct FKs (e.g. `order__cancelled_at`).
 - **Keep for**: age in days, months or years.
-- **Daily folders by** (optional, strongly recommended from the first
-  policy): a date field of the model itself that splits the files into one
-  subfolder per day, so the admin only reads the days of the period being
-  browsed. Files written without it stay in the model folder and are read by
-  every query. Once set it cannot be changed; in a policy created by a
-  migration, include the field in the `schema`.
+- **Ordering**: the order of the rows in the files, and the field is always
+  saved. Ordering by a date field of the model itself that is not null (e.g.
+  `-requested_at`) makes it the **index field**: each file covers a short
+  stretch of it, and the admin reads only the files of each page (see
+  *Browsing in the admin*). In a policy created by a migration, include the
+  field in the `schema`.
 - **Saved columns**: the parquet columns. The primary key is always saved.
   JSON is written as text and `DurationField` as a duration. Fields with
   `from_db_value` (encrypted fields, custom value objects...) are not offered:
@@ -99,7 +102,6 @@ def create_policies(apps, schema_editor):
     content_type, _ = ContentType.objects.get_or_create(app_label='core', model='apirequest')
     ArchivePolicy.objects.get_or_create(content_type=content_type, defaults={'config': {
         'rows_per_file': 3000,
-        'partition_field': 'requested_at',
         'filter': {'fields': ['requested_at'], 'keep_for': 3, 'unit': 'months'},
         'ordering': ['-requested_at'],
         'schema': {'id': 'String', 'requested_at': 'Datetime', 'status_code': 'Int64'},
@@ -114,24 +116,43 @@ class Migration(migrations.Migration):
 The `schema` types are `String`, `Int64`, `Float64`, `Boolean`, `Date`,
 `Datetime`, `Duration`, `Json` and `Decimal(precision,scale)`.
 
-Each file has up to `rows_per_file` rows (with `partition_field`, all from the
-same day), which are deleted from the database by their primary keys right
-after the file is written. If a run fails halfway, the next one picks up what
-is left without duplicating the archive, and nothing that started to match
-the filter during the run is deleted without being in a file.
+Each file has up to `rows_per_file` rows, which are deleted from the database
+by their primary keys right after the file is written. If a run fails halfway,
+the next one picks up what is left without duplicating the archive, and
+nothing that started to match the filter during the run is deleted without
+being in a file.
 
-Files are stored as `<lowercase model name>/<UTC timestamp>_<uuid>.parquet`.
-With `partition_field`, they are stored as
-`<lowercase model name>/<partition_field>=<YYYY-MM-DD>/<UTC timestamp>_<uuid>.parquet`,
-with the day in the project time zone (`TIME_ZONE`; changing it later shifts
-the days of the rows already archived), and the task sorts the rows by the
-`partition_field` before the configured ordering, so each day ends up in a few
-full files. Rows without a `partition_field` value go straight into the model
-folder, and every query reads them.
+Files are stored as `<lowercase model name>/<UTC timestamp>_<uuid>.parquet`,
+and each one is registered in the index of the archive files right after it
+is written.
 
 Queries read files from newest to oldest (by the timestamp in the file name),
 and the schema of the first file applies to all of them: columns added to the
 policy later show up, and are empty in older files.
+
+## Index of the archive files
+
+The admin lists the archive from an index in the database (`ArchiveFile`):
+the rows of each file and the first and last value of the index field. The
+archive task registers every file it writes. Files written before the index
+existed (by version 0.1, or by another process into the same folders) are
+registered by the indexing, which reads each one once:
+
+- in the admin, *Parquet archive → Archive policies*, action *Index the
+  archive files of the selected tables* (superusers only);
+- or the celery task `parquet_archive.index_files`, which also takes
+  `model_names`.
+
+The indexing also removes the files that are no longer in the storage, and
+can run again at any time. A file that cannot be read is skipped with an
+error in the log. While a policy with an index field has never been indexed,
+the admin warns that the listing may be missing files. It also warns about
+the files left out of the listing: those indexed by another field (the
+ordering of the policy changed, until the next indexing) and those without
+the index field (written before it was saved).
+
+A file removed from the storage outside the library breaks the admin pages
+that read it until the next indexing.
 
 ## Browsing in the admin
 
@@ -152,25 +173,36 @@ Disabled in the archive: actions, custom filters (`SimpleListFilter`),
 facets and `date_hierarchy`. Filters and search fields that do not exist in
 the parquet files are ignored with a warning on the page.
 
-In tables with `partition_field`, each page reads only the subfolders of one
-period:
+In tables with an index field, each page reads only the files it needs:
 
-- the `partition_field` filter becomes a dedicated filter, with the months
-  and, for the month shown, the days that exist in the archive (the shortcuts
-  of the default date filter count from today, and the archive only has old
-  rows);
-- without a date filter, the changelist shows the most recent day in the
-  archive;
-- a period covers up to 31 days: a longer filter shows its 31 most recent
-  days, with a warning;
-- the link of each row carries the day (`?day=YYYY-MM-DD`), and the detail
-  page reads only that day's subfolder and the files straight in the model
-  folder.
+- the filter of the index field becomes a dedicated filter, with the months
+  and, for the month shown, the days that the archive files cover (the
+  shortcuts of the default date filter count from today, and the archive only
+  has old rows). In tables with few rows per day a file covers several days,
+  and days without rows may show up;
+- without other filters, search or ordering by another column, the count
+  comes from the index and each page reads only its files, in any period.
+  Without an `ordering` in the `ModelAdmin` or in the model, the archive is
+  listed by the index field, newest first;
+- with a search, other filters or ordering by another column, the page reads
+  the files of the period. When they are more than `PARQUET_ARCHIVE_MAX_FILES`,
+  it shows the rows of the most recent ones, with a link to continue before
+  them;
+- the link of each row carries its date (`?at=...`), and the detail page reads
+  only the files whose range has it.
 
-Files straight in the model folder (rows without a date, or written before
-`partition_field` was set) are read on every page and filtered by the period,
-so rows without a date do not show up. Tables without `partition_field` read
-every file, without a period.
+Tables without an index field read every file on every page.
+
+## Upgrading from 0.1
+
+The daily folders (`partition_field`) were replaced by the index of the
+archive files: new files go straight into the model folder, and the files
+already in daily folders keep being read. After upgrading, run
+`python manage.py migrate parquet_archive` and the indexing of each policy
+(see *Index of the archive files*). The `partition_field` key left in a
+policy config is ignored, and saving the policy in the admin removes it: for
+the admin to keep reading only the files of each page, start the ordering of
+the policy with that field (it must not accept null).
 
 ## Translations
 

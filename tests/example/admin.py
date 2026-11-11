@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from parquet_archive.admin import ArchiveAdminMixin
-from tests.example.models import ApiRequest, Customer
+from tests.example.models import ApiRequest, Customer, Payment
 
 
 class HasBodyFilter(admin.SimpleListFilter):
@@ -28,3 +28,10 @@ class ApiRequestAdmin(ArchiveAdminMixin, admin.ModelAdmin):
     list_filter = ('method', 'requested_at', 'customer', 'duration', HasBodyFilter)
     search_fields = ('body', 'url', 'headers', 'customer__name')
     ordering = ('-requested_at',)
+
+
+@admin.register(Payment)
+class PaymentAdmin(ArchiveAdminMixin, admin.ModelAdmin):
+    list_display = ('id', 'paid_on', 'description')
+    search_fields = ('description',)
+    ordering = ('-paid_on',)

@@ -9,8 +9,8 @@ from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from parquet_archive.schema import (
-    TIMESTAMPED_FILE_REGEX, date_field_paths, day_folder, model_folder, new_parquet_path, polars_type_for_field,
-    relations_blocking_delete, sort_newest_first, to_polars_schema
+    TIMESTAMPED_FILE_REGEX, date_field_paths, day_of, index_value, model_folder, new_parquet_path,
+    polars_type_for_field, relations_blocking_delete, sort_newest_first, to_polars_schema
 )
 from tests.example.models import ApiRequest, Customer, Order
 
@@ -84,20 +84,32 @@ class SchemaTest(SimpleTestCase):
         self.assertEqual(sort_newest_first(files), expected)
 
     @parameterized.expand([
-        ('date', date(2026, 6, 28), 'apirequest/date=2026-06-28'),
-        ('datetime_in_project_time_zone', datetime(2026, 6, 28, 1, 30, tzinfo=dt_timezone.utc),
-         'apirequest/date=2026-06-27'),
-        ('naive_datetime', datetime(2026, 6, 28, 1, 30), 'apirequest/date=2026-06-28'),
-        ('no_date', None, 'apirequest')]
+        ('date', date(2026, 6, 28), date(2026, 6, 28)),
+        ('datetime_in_project_time_zone', datetime(2026, 6, 28, 1, 30, tzinfo=dt_timezone.utc), date(2026, 6, 27)),
+        ('naive_datetime', datetime(2026, 6, 28, 1, 30), date(2026, 6, 28))]
     )
-    def test_day_folder(self, _, value, folder):
-        self.assertEqual(day_folder('apirequest', 'date', value), folder)
+    def test_day_of(self, _, value, day):
+        self.assertEqual(day_of(value), day)
 
-    def test_day_folder_uses_project_time_zone_and_not_the_active_one(self):
+    def test_day_uses_project_time_zone_and_not_the_active_one(self):
         with timezone.override('UTC'):
-            folder = day_folder('apirequest', 'date', datetime(2026, 6, 28, 1, 30, tzinfo=dt_timezone.utc))
+            day = day_of(datetime(2026, 6, 28, 1, 30, tzinfo=dt_timezone.utc))
 
-        self.assertEqual(folder, 'apirequest/date=2026-06-27')
+        self.assertEqual(day, date(2026, 6, 27))
+
+    @parameterized.expand([
+        ('date_becomes_midnight_in_project_time_zone', date(2026, 6, 28),
+         datetime(2026, 6, 28, 3, tzinfo=dt_timezone.utc)),
+        ('datetime_stays', datetime(2026, 6, 28, 1, 30, tzinfo=dt_timezone.utc),
+         datetime(2026, 6, 28, 1, 30, tzinfo=dt_timezone.utc)),
+        ('none', None, None)]
+    )
+    def test_index_value(self, _, value, expected):
+        self.assertEqual(index_value(value), expected)
+
+    def test_index_value_without_time_zone_support_is_naive(self):
+        with self.settings(USE_TZ=False):
+            self.assertEqual(index_value(date(2026, 6, 28)), datetime(2026, 6, 28))
 
     def test_model_folder_is_the_lowercase_class_name(self):
         self.assertEqual(model_folder(ApiRequest), 'apirequest')

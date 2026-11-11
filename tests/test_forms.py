@@ -1,12 +1,9 @@
-from unittest.mock import patch
-
 from parameterized import parameterized
 
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
 from parquet_archive.forms import ArchivePolicyForm
-from parquet_archive.schema import polars_type_for_field
 from tests.base import API_REQUEST_CONFIG, create_policy
 from tests.example.models import ApiRequest, Customer
 
@@ -21,7 +18,6 @@ class ArchivePolicyFormTest(TestCase):
             'keep_for': 3,
             'unit': 'months',
             'rows_per_file': 3000,
-            'partition_field': 'requested_at',
             'ordering': '-requested_at',
             'columns': ['requested_at', 'status_code'],
             **kwargs
@@ -39,7 +35,6 @@ class ArchivePolicyFormTest(TestCase):
         self.assertEqual(policy.content_type, ContentType.objects.get_for_model(ApiRequest))
         self.assertEqual(policy.config, {
             'rows_per_file': 3000,
-            'partition_field': 'requested_at',
             'filter': {'fields': ['requested_at'], 'keep_for': 3, 'unit': 'months'},
             'ordering': ['-requested_at'],
             'schema': {'id': 'String', 'requested_at': 'Datetime', 'status_code': 'Int64'},
@@ -52,7 +47,6 @@ class ArchivePolicyFormTest(TestCase):
             keep_for=row_filter['keep_for'],
             unit=row_filter['unit'],
             rows_per_file=API_REQUEST_CONFIG['rows_per_file'],
-            partition_field=API_REQUEST_CONFIG['partition_field'],
             ordering=','.join(API_REQUEST_CONFIG['ordering']),
             columns=[field for field in API_REQUEST_CONFIG['schema'] if field != 'id'],
         ))
@@ -63,7 +57,7 @@ class ArchivePolicyFormTest(TestCase):
     def test_without_model_does_not_list_fields(self):
         form = ArchivePolicyForm()
 
-        for field in ('date_fields', 'partition_field', 'ordering', 'columns'):
+        for field in ('date_fields', 'ordering', 'columns'):
             with self.subTest(field=field):
                 self.assertEqual(self._choices(form, field), [])
                 self.assertEqual(form.fields[field].help_text, 'Choose the model to list its fields.')
@@ -84,69 +78,23 @@ class ArchivePolicyFormTest(TestCase):
             ['requested_at', 'reference_date', 'customer__registered_at', 'retry_of__requested_at',
              'retry_of__reference_date']
         )
-        self.assertEqual(self._choices(form, 'partition_field'), ['', 'requested_at', 'reference_date'])
         self.assertIn('-requested_at', self._choices(form, 'ordering'))
 
-    def test_partition_field_is_always_saved(self):
-        form = ArchivePolicyForm(data=self._form_data(partition_field='reference_date', columns=['status_code']))
+    def test_ordering_field_is_always_saved(self):
+        form = ArchivePolicyForm(data=self._form_data(ordering='-reference_date', columns=['status_code']))
 
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(
             form.save().config['schema'], {'id': 'String', 'status_code': 'Int64', 'reference_date': 'Date'}
         )
 
-    def test_daily_folders_are_optional(self):
-        form = ArchivePolicyForm(data=self._form_data(partition_field='', columns=['status_code']))
+    def test_without_ordering_saves_only_the_columns(self):
+        form = ArchivePolicyForm(data=self._form_data(ordering='', columns=['status_code']))
 
         self.assertTrue(form.is_valid(), form.errors)
         config = form.save().config
-        self.assertNotIn('partition_field', config)
+        self.assertEqual(config['ordering'], [])
         self.assertEqual(config['schema'], {'id': 'String', 'status_code': 'Int64'})
-
-    def test_daily_folders_do_not_offer_date_field_without_archive_type(self):
-        def no_type_for_reference_date(field):
-            return None if field.attname == 'reference_date' else polars_type_for_field(field)
-
-        with patch('parquet_archive.forms.polars_type_for_field', side_effect=no_type_for_reference_date):
-            form = ArchivePolicyForm(initial={'content_type': str(ContentType.objects.get_for_model(ApiRequest).pk)})
-
-        self.assertEqual(self._choices(form, 'partition_field'), ['', 'requested_at'])
-
-    @parameterized.expand([('change', 'reference_date'), ('clear', '')])
-    def test_editing_does_not_change_daily_folders_already_set(self, _, partition_field):
-        form = ArchivePolicyForm(instance=create_policy(), data=self._form_data(partition_field=partition_field))
-
-        self.assertTrue(form.fields['partition_field'].disabled)
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.save().config['partition_field'], 'requested_at')
-
-    def test_editing_without_daily_folders_allows_setting_them(self):
-        policy = create_policy()
-        del policy.config['partition_field']
-        policy.save()
-
-        form = ArchivePolicyForm(instance=policy, data=self._form_data(partition_field='requested_at'))
-
-        self.assertFalse(form.fields['partition_field'].disabled)
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.save().config['partition_field'], 'requested_at')
-
-    def test_editing_keeps_saved_partition_field_outside_the_choices(self):
-        def no_type_for_requested_at(field):
-            return None if field.attname == 'requested_at' else polars_type_for_field(field)
-
-        with patch('parquet_archive.forms.polars_type_for_field', side_effect=no_type_for_requested_at):
-            form = ArchivePolicyForm(instance=create_policy(), data=self._form_data(columns=['status_code']))
-
-        self.assertIn('requested_at', self._choices(form, 'partition_field'))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    @parameterized.expand([('url',), ('customer__registered_at',)])
-    def test_rejects_partition_field_that_is_not_a_date_of_the_model_itself(self, partition_field):
-        form = ArchivePolicyForm(data=self._form_data(partition_field=partition_field))
-
-        self.assertFalse(form.is_valid())
-        self.assertIn('partition_field', form.errors)
 
     def test_rejects_column_without_supported_type(self):
         form = ArchivePolicyForm(data=self._form_data(columns=['external_code']))
@@ -169,7 +117,7 @@ class ArchivePolicyFormTest(TestCase):
 
     def test_rejects_model_with_relations_blocking_delete(self):
         form = ArchivePolicyForm(data=self._form_data(
-            Customer, date_fields=['registered_at'], partition_field='registered_at', ordering='', columns=['name']
+            Customer, date_fields=['registered_at'], ordering='', columns=['name']
         ))
 
         self.assertFalse(form.is_valid())
@@ -182,7 +130,6 @@ class ArchivePolicyFormTest(TestCase):
         self.assertEqual(form.initial['keep_for'], 3)
         self.assertEqual(form.initial['unit'], 'months')
         self.assertEqual(form.initial['rows_per_file'], 2)
-        self.assertEqual(form.initial['partition_field'], 'requested_at')
         self.assertEqual(form.initial['ordering'], '-requested_at')
         self.assertEqual(
             form.initial['columns'], [field for field in API_REQUEST_CONFIG['schema'] if field != 'id']

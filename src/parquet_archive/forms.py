@@ -2,7 +2,6 @@ from django import forms
 from django.conf import settings
 from django.contrib.admin.widgets import FilteredSelectMultiple, get_select2_language
 from django.contrib.contenttypes.models import ContentType
-from django.db.models.constants import LOOKUP_SEP
 from django.utils.translation import gettext, gettext_lazy as _
 
 from parquet_archive.models import ArchivePolicy
@@ -35,10 +34,10 @@ class ArchivePolicyForm(forms.ModelForm):
     """
     Builds the archive config dict from admin fields.
 
-    The choices of date fields, folder, ordering and saved columns come from
-    the chosen model (on creation the admin reloads the form with
+    The choices of date fields, ordering and saved columns come from the
+    chosen model (on creation the admin reloads the form with
     ?content_type=<id> when the model changes) and the polars schema is derived
-    from the field types. The primary key and the partition field are always
+    from the field types. The primary key and the ordering field are always
     saved.
     """
 
@@ -69,19 +68,13 @@ class ArchivePolicyForm(forms.ModelForm):
         label=_('Rows per file'),
         help_text=_('Number of rows per parquet file. Ideally each file ends up close to 512MB.')
     )
-    partition_field = forms.ChoiceField(
-        required=False,
-        label=_('Daily folders by'),
-        help_text=_(
-            'Files go into one subfolder per day of this field (e.g. requested_at=2026-06-28), in the project time '
-            'zone, and the field is always saved. Use it when rows are archived by their own date; when empty, files '
-            'go straight into the model folder. Once saved it cannot be changed or cleared.'
-        )
-    )
     ordering = forms.ChoiceField(
         required=False,
         label=_('Ordering'),
-        help_text=_('Order of the rows in the parquet files.')
+        help_text=_(
+            'Order of the rows in the parquet files, and the field is always saved. With a date field of the model '
+            'that is not null (e.g. the creation date), the admin reads only the files of each page.'
+        )
     )
     columns = forms.MultipleChoiceField(
         label=_('Saved columns'),
@@ -105,20 +98,15 @@ class ArchivePolicyForm(forms.ModelForm):
                 'keep_for': config['filter']['keep_for'],
                 'unit': config['filter']['unit'],
                 'rows_per_file': config['rows_per_file'],
-                'partition_field': config.get('partition_field'),
                 'ordering': ','.join(config['ordering']),
                 'columns': [field for field in self.instance.get_schema_fields() if field != pk],
             })
 
         if model is None:
-            for field_name in ('date_fields', 'partition_field', 'ordering', 'columns'):
+            for field_name in ('date_fields', 'ordering', 'columns'):
                 self.fields[field_name].help_text = _('Choose the model to list its fields.')
         else:
             self._build_choices(model)
-
-        # NOTE: The subfolders already written use the field, and changing it would make the admin read all of them
-        if self.instance.pk and self.instance.config.get('partition_field'):
-            self.fields['partition_field'].disabled = True
 
     def _get_selected_model(self):
         if self.instance.pk:
@@ -161,15 +149,6 @@ class ArchivePolicyForm(forms.ModelForm):
             date_choices.setdefault(path, path)
         self.fields['date_fields'].choices = list(date_choices.items())
 
-        partition_choices = {
-            path: f'{path} ({description})' for path, description in date_field_paths(model)
-            if LOOKUP_SEP not in path and polars_type_for_field(model._meta.get_field(path))
-        }
-        saved_partition_field = self.initial.get('partition_field')
-        if saved_partition_field:
-            partition_choices.setdefault(saved_partition_field, saved_partition_field)
-        self.fields['partition_field'].choices = [('', '---------'), *partition_choices.items()]
-
         ordering_choices = {'': '---------'}
         for field in model._meta.concrete_fields:
             ordering_choices[field.attname] = gettext('%(field)s (ascending)') % {'field': field.attname}
@@ -201,9 +180,8 @@ class ArchivePolicyForm(forms.ModelForm):
                 % {'model': model._meta.label, 'relations': ', '.join(relations)}
             )
 
-        cleaned_data['schema'] = self._build_schema(
-            model, [cleaned_data.get('partition_field'), *cleaned_data.get('columns', [])]
-        )
+        ordering_field = (cleaned_data.get('ordering') or '').split(',')[0].removeprefix('-')
+        cleaned_data['schema'] = self._build_schema(model, [ordering_field, *cleaned_data.get('columns', [])])
         return cleaned_data
 
     def _build_schema(self, model, columns):
@@ -233,7 +211,4 @@ class ArchivePolicyForm(forms.ModelForm):
             'ordering': [item for item in self.cleaned_data['ordering'].split(',') if item],
             'schema': self.cleaned_data['schema'],
         }
-        # NOTE: Without daily folders the config has no partition_field key
-        if self.cleaned_data['partition_field']:
-            self.instance.config['partition_field'] = self.cleaned_data['partition_field']
         return super().save(commit=commit)

@@ -4,6 +4,7 @@ from functools import reduce
 from dateutil.relativedelta import relativedelta
 
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import FieldDoesNotExist
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -21,7 +22,6 @@ class ArchivePolicy(models.Model):
     dict consumed by the task, in a serializable format:
     {
         'rows_per_file': 3000,
-        'partition_field': 'requested_at',
         'filter': {'fields': ['requested_at'], 'keep_for': 3, 'unit': 'months'},
         'ordering': ['-requested_at'],
         'schema': {'id': 'String', 'requested_at': 'Datetime', 'amount': 'Decimal(14,2)'}
@@ -51,6 +51,13 @@ class ArchivePolicy(models.Model):
         _('configuration'),
         help_text=_('Dict consumed by the archive task: rows_per_file, filter, ordering and schema.')
     )
+    indexed_at = models.DateTimeField(
+        _('files indexed at'),
+        null=True,
+        blank=True,
+        editable=False,
+        help_text=_('Last run of the indexing of the archive files, which the admin needs to list all of them.')
+    )
 
     class Meta:
         verbose_name = _('archive policy')
@@ -72,12 +79,30 @@ class ArchivePolicy(models.Model):
         return reduce(operator.or_, (Q(**{f'{field}__lte': cutoff}) for field in row_filter['fields']))
 
     @classmethod
-    def get_partition_field(cls, model):
-        """partition_field of the model's policy, or None without a policy or without day subfolders."""
+    def get_with_index_field(cls, model):
+        """Policy of the model and its index field, or None for each of them."""
         policy = cls.objects.filter(content_type=ContentType.objects.get_for_model(model)).first()
-        if policy is None:
+        return policy, policy.get_index_field() if policy else None
+
+    def get_index_field(self):
+        """
+        Field whose range the admin uses to pick the files of each page: the
+        first of the ordering, when it is a date field of the model itself,
+        not null and saved in the archive. The files are written sorted by it,
+        so each one covers a short stretch of it.
+        """
+        ordering = self.config['ordering']
+        if not ordering:
             return None
-        return policy.config.get('partition_field')
+
+        name = ordering[0].removeprefix('-')
+        try:
+            field = self.content_type.model_class()._meta.get_field(name)
+        except FieldDoesNotExist:
+            return None
+        if not isinstance(field, models.DateField) or field.null or field.attname not in self.config['schema']:
+            return None
+        return field.attname
 
     def get_schema_fields(self):
         """
@@ -93,16 +118,42 @@ class ArchivePolicy(models.Model):
     def get_archive_info(self):
         """Builds the dict in the format consumed by archive_tables."""
         schema = self.config['schema']
-        partition_field = self.config.get('partition_field')
-        if partition_field and partition_field not in schema:
-            # NOTE: The admin filters the rows of the period and builds the detail link from the partition column
-            raise ValueError(f'Archive policy {self} has the partition field ({partition_field}) outside the schema.')
         return {
             'rows_per_file': self.config['rows_per_file'],
-            'partition_field': partition_field,
+            'content_type': self.content_type,
+            'index_field': self.get_index_field(),
             'model': self.content_type.model_class(),
             'filter': self.get_filter(),
             'ordering': self.config['ordering'],
             'schema': to_polars_schema({field: schema[field] for field in self.get_schema_fields()}),
             'json_columns': [field for field, type_name in schema.items() if type_name == 'Json'],
         }
+
+
+class ArchiveFile(models.Model):
+    """Parquet file of the archive, with its rows and the range of the policy's index field."""
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, related_name='+', verbose_name=_('model'))
+    path = models.CharField(_('path'), max_length=255, help_text=_('Path inside the model folder.'))
+    rows = models.PositiveIntegerField(_('rows'))
+    field = models.CharField(
+        _('index field'),
+        max_length=100,
+        blank=True,
+        help_text=_('Field of the first and last dates, empty when the policy has no index field.')
+    )
+    min_date = models.DateTimeField(_('first date'), null=True, blank=True)
+    max_date = models.DateTimeField(_('last date'), null=True, blank=True)
+
+    class Meta:
+        verbose_name = _('archive file')
+        verbose_name_plural = _('archive files')
+        constraints = [
+            models.UniqueConstraint(fields=('content_type', 'path'), name='parquet_archive_unique_file_path'),
+        ]
+        indexes = [
+            models.Index(fields=('content_type', 'field', 'max_date'), name='parquet_archive_file_max_date'),
+        ]
+
+    def __str__(self):
+        return self.path
