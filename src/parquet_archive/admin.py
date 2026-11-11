@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import date, timedelta, timezone as dt_timezone
 from itertools import groupby
 from operator import attrgetter
@@ -14,6 +15,7 @@ from django.db import models
 from django.db.models import Count, Q, prefetch_related_objects
 from django.db.models.constants import LOOKUP_SEP
 from django.http import Http404
+from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
@@ -27,12 +29,17 @@ from parquet_archive.conf import get_max_files
 from parquet_archive.forms import ArchivePolicyForm
 from parquet_archive.models import ArchiveFile, ArchivePolicy
 from parquet_archive.query import (
-    ArchiveFolder, ArchiveQuery, IndexedQuery, UnsupportedLookup, file_groups, index_range, period_bounds
+    READ_ERRORS, ArchiveFolder, ArchiveQuery, IndexedQuery, UnsupportedLookup, file_groups, index_range,
+    period_bounds
 )
 from parquet_archive.schema import day_of, sort_newest_first, start_of_day
 from parquet_archive.tasks import archive_tables_task, index_files_task
 
+logger = logging.getLogger(__name__)
+
 PERIOD_LOOKUPS = ('gt', 'gte', 'lt', 'lte')
+
+SCHEMA_READ_ATTEMPTS = 5
 
 
 def _start_of_day(field, day):
@@ -192,6 +199,8 @@ class ArchiveChangeList(ChangeList):
                 query = self._filter(request, query, field_filters, remaining_lookup_params, ordering)
         except (ValidationError, ValueError, OverflowError) as e:
             raise IncorrectLookupParameters(e)
+        except READ_ERRORS:
+            query = self._unreadable_files(request)
 
         self.clear_all_filters_qs = self.get_query_string(
             new_params={**remaining_lookup_params, DataSourceFilter.parameter_name: DataSourceFilter.ARCHIVE},
@@ -293,9 +302,37 @@ class ArchiveChangeList(ChangeList):
             ) % {'count': left_out['without_date'], 'field': field.verbose_name})
 
     def _newest_schema(self, files):
+        """Columns of the newest archive file that can be read."""
         if not files:
             return None
-        return ArchiveFolder(self.model).read_schema(sort_newest_first(file.path for file in files)[0])
+
+        folder = ArchiveFolder(self.model)
+        for file_path in sort_newest_first(file.path for file in files)[:SCHEMA_READ_ATTEMPTS]:
+            try:
+                return folder.read_schema(file_path)
+            except READ_ERRORS as error:
+                # NOTE: A file removed from the storage stays in the index until the next indexing, and only the
+                # pages that read it show the error
+                read_error = error
+        raise read_error
+
+    def _unreadable_files(self, request):
+        """Empty query instead of the rows, with an error message, when an archive file could not be read."""
+        logger.exception('Archive files of %s could not be read.', self.opts.label)
+        if self.index_field:
+            messages.error(request, _(
+                'Some archive files of this table could not be read, e.g. because they were removed from the storage. '
+                'In that case, index the files again in the archive policies.'
+            ))
+        else:
+            messages.error(request, _('Some archive files of this table could not be read.'))
+
+        folder = ArchiveFolder(self.model)
+        empty = ArchiveQuery(self.model, folder, folder.read([]))
+        # NOTE: The total of the index does not read the files and stays right
+        if not isinstance(getattr(self, 'root_queryset', None), IndexedQuery):
+            self.root_queryset = empty
+        return empty
 
     def _limit_files(self, request, field, files):
         """
@@ -326,7 +363,12 @@ class ArchiveChangeList(ChangeList):
         return paths
 
     def get_results(self, request):
-        super().get_results(request)
+        try:
+            super().get_results(request)
+        except READ_ERRORS:
+            # NOTE: On S3 the files are only read here, when the page is counted and sliced
+            self.queryset = self._unreadable_files(request)
+            super().get_results(request)
 
         # NOTE: Replaces select_related, which does not exist for instances read from parquet
         relations = []
@@ -424,19 +466,31 @@ class ArchiveAdminMixin:
             paths = ArchiveFile.objects.filter(
                 content_type=policy.content_type, field=index_field, min_date__lte=at, max_date__gte=at
             ).values_list('path', flat=True)
-            frame = folder.read(folder.sources(sort_newest_first(paths)))
         else:
-            frame = folder.load()
-
-        query = ArchiveQuery(self.model, folder, frame).apply_lookups({'pk': [unquote(object_id)]})
-        rows = query[:1]
-        if not rows:
-            raise Http404(_('Row %(pk)s not found in the archive.') % {'pk': object_id})
+            paths = None
 
         changelist_url = reverse(
             'admin:%s_%s_changelist' % (self.opts.app_label, self.opts.model_name),
             current_app=self.admin_site.name
         )
+        try:
+            frame = folder.load() if paths is None else folder.read(folder.sources(sort_newest_first(paths)))
+            query = ArchiveQuery(self.model, folder, frame).apply_lookups({'pk': [unquote(object_id)]})
+            rows = query[:1]
+        except READ_ERRORS:
+            # NOTE: Like the admin with an object that no longer exists, it goes back to the list with the message
+            logger.exception('Archive file of a row of %s could not be read.', self.opts.label)
+            if index_field:
+                messages.error(request, _(
+                    'The archive file of the row could not be read, e.g. because it was removed from the storage. '
+                    'In that case, index the files again in the archive policies.'
+                ))
+            else:
+                messages.error(request, _('Some archive files of this table could not be read.'))
+            return redirect(f'{changelist_url}?{urlencode(changelist_params)}')
+        if not rows:
+            raise Http404(_('Row %(pk)s not found in the archive.') % {'pk': object_id})
+
         context = {
             **self.admin_site.each_context(request),
             'opts': self.opts,

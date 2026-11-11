@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from parquet_archive.conf import get_storage
 from parquet_archive.models import ArchiveFile, ArchivePolicy
-from parquet_archive.query import FILE_COLUMN, ArchiveFolder
+from parquet_archive.query import FILE_COLUMN, READ_ERRORS, ArchiveFolder
 from parquet_archive.schema import index_value, model_folder, new_parquet_path
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ def _read_archive_files(folder, content_type, index_field, paths):
     """ArchiveFile of each path with its rows and range, skipping (with a log) the files that cannot be read."""
     try:
         return _read_file_stats(folder, content_type, index_field, paths)
-    except (pl.exceptions.PolarsError, OSError):
+    except READ_ERRORS:
         if len(paths) > 1:
             # NOTE: One bad file fails the whole batch, so the files are read one by one to skip only that one
             return [

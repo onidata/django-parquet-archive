@@ -151,8 +151,10 @@ the files left out of the listing: those indexed by another field (the
 ordering of the policy changed, until the next indexing) and those without
 the index field (written before it was saved).
 
-A file removed from the storage outside the library breaks the admin pages
-that read it until the next indexing.
+A file removed from the storage outside the library is still in the index
+until the next indexing: the admin pages that read it show an error message
+instead of the rows, and the detail of its rows goes back to the list with
+the message.
 
 ## Browsing in the admin
 

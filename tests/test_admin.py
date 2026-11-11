@@ -282,6 +282,18 @@ class ArchiveAdminMixinTest(SuperuserMixin, ArchivedRequestsMixin, TestCase):
     def test_detail_of_row_outside_the_archive_returns_404(self):
         self.assertEqual(self.client.get(self._detail_url(uuid4())).status_code, 404)
 
+    def test_unreadable_file_shows_the_error_without_the_advice_to_index(self):
+        get_storage().save('apirequest/20250101T000000_broken.parquet', io.BytesIO(b'not a parquet file'))
+
+        with self.assertLogs('parquet_archive.admin', level='ERROR'):
+            response = self.client.get(self.url, ARCHIVE)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            'Some archive files of this table could not be read.',
+            [str(message) for message in response.context['messages']]
+        )
+
     def test_admin_in_brazilian_portuguese(self):
         with self.settings(LANGUAGE_CODE='pt-br'):
             response = self.client.get(self.url, ARCHIVE)
@@ -411,6 +423,75 @@ class ArchiveAdminIndexTest(SuperuserMixin, ArchivedRequestsMixin, TestCase):
 
         self.assertIsInstance(response.context['cl'].queryset, IndexedQuery)
         self.assertEqual(self._ids(response), [request.id for request in reversed(self.old_requests)])
+
+    def _remove_from_the_storage(self, path):
+        get_storage().delete(f'apirequest/{path}')
+
+    def test_file_removed_from_the_storage_shows_an_error_until_the_next_indexing(self):
+        self._remove_from_the_storage(self.newest_file)
+
+        with self.assertLogs('parquet_archive.admin', level='ERROR'):
+            response = self.client.get(self.url, ARCHIVE)
+        index_files()
+        after = self.client.get(self.url, ARCHIVE)
+
+        error = (
+            'Some archive files of this table could not be read, e.g. because they were removed from the storage. '
+            'In that case, index the files again in the archive policies.'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._ids(response), [])
+        self.assertEqual(response.context['cl'].full_result_count, 3)
+        self.assertIn(error, self._messages(response))
+        self.assertEqual(self._ids(after), [self.old_requests[0].id])
+        self.assertNotIn(error, self._messages(after))
+
+    def test_pages_that_do_not_read_the_removed_file_still_list_their_rows(self):
+        self._remove_from_the_storage(self.newest_file)
+
+        response = self.client.get(self.url, self._period(self.days[0], self.days[0]))
+
+        self.assertEqual(self._ids(response), [self.old_requests[0].id])
+
+    def test_file_that_fails_only_when_the_page_is_read_shows_the_error(self):
+        # NOTE: On S3 the files are read only when the page is counted, after the query is built
+        read = ArchiveFolder.read
+
+        def read_missing_file(folder, sources):
+            return pl.scan_parquet(f'{uuid4()}/missing.parquet') if sources else read(folder, sources)
+
+        with patch.object(ArchiveFolder, 'read', autospec=True, side_effect=read_missing_file), \
+                self.assertLogs('parquet_archive.admin', level='ERROR'):
+            response = self.client.get(self.url, {**ARCHIVE, 'q': 'beta'})
+
+        self.assertEqual(self._ids(response), [])
+        self.assertTrue([message for message in self._messages(response) if 'could not be read' in message])
+
+    def test_search_with_a_file_removed_from_the_storage_shows_the_error(self):
+        self._remove_from_the_storage(self.oldest_file)
+
+        with self.assertLogs('parquet_archive.admin', level='ERROR'):
+            response = self.client.get(self.url, {**ARCHIVE, 'q': 'beta'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._ids(response), [])
+        self.assertTrue([message for message in self._messages(response) if 'could not be read' in message])
+
+    def test_detail_of_a_row_whose_file_was_removed_goes_back_to_the_list_with_the_error(self):
+        cl = self.client.get(self.url, ARCHIVE).context['cl']
+        detail_url = cl.url_for_result(cl.result_list[2])
+        self._remove_from_the_storage(self.oldest_file)
+
+        with self.assertLogs('parquet_archive.admin', level='ERROR'):
+            response = self.client.get(detail_url, follow=True)
+
+        self.assertEqual(response.redirect_chain[0][1], 302)
+        self.assertEqual(response.context['cl'].archive_period, (self.days[0], self.days[0]))
+        self.assertIn(
+            'The archive file of the row could not be read, e.g. because it was removed from the storage. '
+            'In that case, index the files again in the archive policies.',
+            self._messages(response)
+        )
 
     def _write_into_the_model_folder(self, pk, requested_at):
         columns = {

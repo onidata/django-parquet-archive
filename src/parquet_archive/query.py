@@ -71,6 +71,9 @@ SEARCH_PREFIXES = {'^': 'istartswith', '=': 'iexact', '@': 'icontains'}
 # NOTE: Source file of each row, so pagination rereads only the files of the page
 FILE_COLUMN = '_parquet_archive_file'
 
+# NOTE: A missing or unreadable file fails with OSError in the Django storage and with a polars error on S3
+READ_ERRORS = (OSError, pl.exceptions.PolarsError)
+
 
 class UnsupportedLookup(Exception):
     """Admin lookup that cannot be applied to the archive columns."""

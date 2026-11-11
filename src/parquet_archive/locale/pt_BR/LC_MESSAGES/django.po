@@ -81,6 +81,27 @@ msgstr ""
 msgid "Invalid or missing date of the row (at)."
 msgstr "Data do registro (at) inválida ou ausente."
 
+msgid ""
+"Some archive files of this table could not be read, e.g. because they were "
+"removed from the storage. In that case, index the files again in the archive "
+"policies."
+msgstr ""
+"Alguns arquivos do backup frio desta tabela não puderam ser lidos, por "
+"exemplo porque foram apagados do storage. Nesse caso, indexe os arquivos de "
+"novo nas configurações de backup frio."
+
+msgid "Some archive files of this table could not be read."
+msgstr "Alguns arquivos do backup frio desta tabela não puderam ser lidos."
+
+msgid ""
+"The archive file of the row could not be read, e.g. because it was removed "
+"from the storage. In that case, index the files again in the archive "
+"policies."
+msgstr ""
+"O arquivo do backup frio deste registro não pôde ser lido, por exemplo "
+"porque foi apagado do storage. Nesse caso, indexe os arquivos de novo nas "
+"configurações de backup frio."
+
 #, python-format
 msgid "Row %(pk)s not found in the archive."
 msgstr "Registro %(pk)s não encontrado no backup frio."
