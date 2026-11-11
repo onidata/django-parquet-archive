@@ -388,33 +388,74 @@ class ArchiveAdminIndexTest(SuperuserMixin, ArchivedRequestsMixin, TestCase):
         self.assertEqual(self._ids(older), [self.old_requests[0].id])
         self.assertFalse([message for message in self._messages(older) if 'Continue before' in message])
 
-    def test_warns_while_the_files_were_not_indexed(self):
-        indexed = self.client.get(self.url, ARCHIVE)
+    INDEXING = (
+        'The archive files of this table are being indexed, so the listing may be missing some of them for a few '
+        'minutes.'
+    )
+
+    def _get_queueing_the_indexing(self):
+        with patch('parquet_archive.admin.index_files_task') as index_files_task, \
+                self.captureOnCommitCallbacks(execute=True):
+            response = self.client.get(self.url, ARCHIVE)
+        return response, index_files_task.delay
+
+    def test_indexed_table_does_not_queue_the_indexing(self):
+        response, delay = self._get_queueing_the_indexing()
+
+        delay.assert_not_called()
+        self.assertNotIn(self.INDEXING, self._messages(response))
+
+    def test_table_never_indexed_queues_the_indexing_once(self):
         ArchivePolicy.objects.update(indexed_at=None)
-        not_indexed = self.client.get(self.url, ARCHIVE)
 
-        warning = (
-            'The archive files of this table were not indexed yet, so the listing may be missing some of them. '
-            'Index them in the archive policies.'
-        )
-        self.assertNotIn(warning, self._messages(indexed))
-        self.assertIn(warning, self._messages(not_indexed))
+        first, first_delay = self._get_queueing_the_indexing()
+        second, second_delay = self._get_queueing_the_indexing()
 
-    def test_warns_about_the_files_left_out_of_the_listing(self):
+        first_delay.assert_called_once_with(model_names=['apirequest'])
+        second_delay.assert_not_called()
+        self.assertIn(self.INDEXING, self._messages(first))
+        self.assertIn(self.INDEXING, self._messages(second))
+
+    def test_broker_that_refuses_the_indexing_does_not_break_the_page(self):
+        ArchivePolicy.objects.update(indexed_at=None)
+
+        # NOTE: The callbacks run when captureOnCommitCallbacks exits, so the log is captured outside of it
+        with self.assertLogs('parquet_archive.admin', level='ERROR'), \
+                patch('parquet_archive.admin.index_files_task') as index_files_task, \
+                self.captureOnCommitCallbacks(execute=True):
+            index_files_task.delay.side_effect = ConnectionError('broker unavailable')
+            response = self.client.get(self.url, ARCHIVE)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self._ids(response)), 3)
+        self.assertIsNone(ArchivePolicy.objects.get().indexing_requested_at)
+
+    def test_indexing_not_finished_after_an_hour_is_queued_again(self):
+        ArchivePolicy.objects.update(indexed_at=None, indexing_requested_at=timezone.now() - timedelta(hours=2))
+
+        _response, delay = self._get_queueing_the_indexing()
+
+        delay.assert_called_once_with(model_names=['apirequest'])
+
+    def test_files_indexed_by_another_field_queue_the_indexing_again(self):
+        ArchivePolicy.objects.update(indexing_requested_at=timezone.now() - timedelta(minutes=5))
         ArchiveFile.objects.filter(path=self.oldest_file).update(field='status_code')
+
+        response, delay = self._get_queueing_the_indexing()
+
+        delay.assert_called_once_with(model_names=['apirequest'])
+        self.assertEqual(self._ids(response), [self.old_requests[2].id, self.old_requests[1].id])
+        self.assertIn(self.INDEXING, self._messages(response))
+
+    def test_warns_about_the_files_without_the_index_field(self):
         ArchiveFile.objects.create(
             content_type=ContentType.objects.get_for_model(ApiRequest), path='20250101T000000_old.parquet', rows=2,
             field='requested_at',
         )
 
-        response = self.client.get(self.url, ARCHIVE)
+        response, delay = self._get_queueing_the_indexing()
 
-        self.assertEqual(self._ids(response), [self.old_requests[2].id, self.old_requests[1].id])
-        self.assertIn(
-            '1 archive file of this table was indexed by another field and is not listed. '
-            'Index it again in the archive policies.',
-            self._messages(response)
-        )
+        delay.assert_not_called()
         self.assertIn('1 archive file of this table has no requested at and is not listed.', self._messages(response))
 
     def test_without_ordering_of_the_admin_lists_by_the_index_field(self):

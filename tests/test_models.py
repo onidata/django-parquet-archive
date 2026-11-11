@@ -9,6 +9,7 @@ from parameterized import parameterized
 from django.test import TestCase
 from django.utils import timezone
 
+from parquet_archive.models import ArchivePolicy
 from tests.base import API_REQUEST_CONFIG, create_policy
 from tests.example.models import ApiRequest
 
@@ -73,6 +74,23 @@ class ArchivePolicyTest(TestCase):
         policy = create_policy(config={**API_REQUEST_CONFIG, 'ordering': ordering})
 
         self.assertIsNone(policy.get_index_field())
+
+    def test_claims_the_indexing_once_while_it_is_pending(self):
+        policy = create_policy()
+
+        self.assertTrue(policy.claim_indexing())
+        self.assertFalse(policy.claim_indexing())
+        self.assertIsNotNone(ArchivePolicy.objects.get().indexing_requested_at)
+
+    @parameterized.expand([
+        ('pending_for_more_than_an_hour', {'indexing_requested_at': timedelta(hours=-2)}),
+        ('finished_after_the_request', {'indexing_requested_at': timedelta(minutes=-5), 'indexed_at': timedelta()}),
+    ])
+    def test_claims_the_indexing_again(self, _, ago):
+        policy = create_policy()
+        ArchivePolicy.objects.update(**{field: timezone.now() + delta for field, delta in ago.items()})
+
+        self.assertTrue(policy.claim_indexing())
 
     def test_index_field_must_be_saved_in_the_archive(self):
         policy = create_policy()

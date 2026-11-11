@@ -116,6 +116,9 @@ def index_files(model_names=None):
     if model_names:
         policies = policies.filter(content_type__model__in=model_names)
     for policy in policies:
+        if policy.content_type.model_class() is None:
+            logger.warning('Archive policy %s was not indexed: its model is not in the project.', policy)
+            continue
         _index_policy_files(policy)
 
 

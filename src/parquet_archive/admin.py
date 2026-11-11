@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import date, timedelta, timezone as dt_timezone
+from functools import partial
 from itertools import groupby
 from operator import attrgetter
 
@@ -11,7 +12,7 @@ from django.contrib.admin.options import IncorrectLookupParameters
 from django.contrib.admin.utils import display_for_field, quote, unquote
 from django.contrib.admin.views.main import ORDER_VAR, PAGE_VAR, ChangeList
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist, PermissionDenied, ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Count, Q, prefetch_related_objects
 from django.db.models.constants import LOOKUP_SEP
 from django.http import Http404
@@ -50,6 +51,16 @@ def _start_of_day(field, day):
         return start_of_day(day)
     # NOTE: polars does not compare the column written in UTC with a datetime in the project's named time zone
     return start_of_day(day).astimezone(dt_timezone.utc)
+
+
+def _queue_indexing(policy):
+    """Queues the indexing of the policy's archive files, releasing the request when the broker refuses it."""
+    try:
+        index_files_task.delay(model_names=[policy.content_type.model])
+    except Exception:
+        # NOTE: Each broker raises its own errors, and without the request the next page view queues it again
+        logger.exception('The indexing of the archive files of %s could not be queued.', policy)
+        ArchivePolicy.objects.filter(pk=policy.pk).update(indexing_requested_at=None)
 
 
 def _covered_days(files):
@@ -243,7 +254,7 @@ class ArchiveChangeList(ChangeList):
     def _indexed_query(self, request, policy, lookups, ordering):
         field = self.model._meta.get_field(self.index_field)
         table_files = ArchiveFile.objects.filter(content_type=policy.content_type)
-        self._warn_about_files_left_out(request, policy, table_files, field)
+        self._check_the_index(request, policy, table_files, field)
         files = list(
             table_files.filter(field=field.attname, min_date__isnull=False)
             .order_by('-max_date')
@@ -274,26 +285,25 @@ class ArchiveChangeList(ChangeList):
             sort_newest_first(paths)
         )))
 
-    def _warn_about_files_left_out(self, request, policy, table_files, field):
-        if policy.indexed_at is None:
-            messages.warning(request, _(
-                'The archive files of this table were not indexed yet, so the listing may be missing some of them. '
-                'Index them in the archive policies.'
-            ))
-            return
-
+    def _check_the_index(self, request, policy, table_files, field):
+        """
+        Queues the indexing of the archive files, without a manual step, when
+        the table was never indexed (e.g. right after the upgrade) or has files
+        indexed by another field (the ordering changed), and warns about the
+        files left out of the listing.
+        """
         left_out = table_files.aggregate(
             other_field=Count('pk', filter=~Q(field=field.attname)),
             without_date=Count('pk', filter=Q(field=field.attname, min_date__isnull=True)),
         )
-        if left_out['other_field']:
-            messages.warning(request, ngettext(
-                '%(count)s archive file of this table was indexed by another field and is not listed. '
-                'Index it again in the archive policies.',
-                '%(count)s archive files of this table were indexed by another field and are not listed. '
-                'Index them again in the archive policies.',
-                left_out['other_field'],
-            ) % {'count': left_out['other_field']})
+        if policy.indexed_at is None or left_out['other_field']:
+            if policy.claim_indexing():
+                # NOTE: After the commit, so the worker does not run before the request is saved
+                transaction.on_commit(partial(_queue_indexing, policy))
+            messages.warning(request, _(
+                'The archive files of this table are being indexed, so the listing may be missing some of them for '
+                'a few minutes.'
+            ))
         if left_out['without_date']:
             messages.warning(request, ngettext(
                 '%(count)s archive file of this table has no %(field)s and is not listed.',

@@ -9,6 +9,7 @@ import polars as pl
 
 from dateutil.relativedelta import relativedelta
 
+from django.contrib.contenttypes.models import ContentType
 from django.core.files.base import ContentFile
 from django.db import connection
 from django.test import TestCase
@@ -268,6 +269,17 @@ class IndexFilesTest(ArchiveStorageMixin, TestCase):
 
         self.assertEqual(self._registered(), self.registered)
         self.assertIn('apirequest/20250101T000000_broken.parquet could not be indexed', logs.output[0])
+
+    def test_skips_the_policy_whose_model_is_no_longer_in_the_project(self):
+        ArchiveFile.objects.all().delete()
+        gone = ContentType.objects.create(app_label='example', model='gone')
+        ArchivePolicy.objects.create(content_type=gone, config=API_REQUEST_CONFIG)
+
+        with self.assertLogs('parquet_archive.archive', level='WARNING') as logs:
+            index_files()
+
+        self.assertEqual(self._registered(), self.registered)
+        self.assertIn('example.gone was not indexed', logs.output[0])
 
     def test_indexes_only_the_given_tables(self):
         ArchiveFile.objects.all().delete()

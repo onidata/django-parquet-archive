@@ -136,20 +136,26 @@ The admin lists the archive from an index in the database (`ArchiveFile`):
 the rows of each file and the first and last value of the index field. The
 archive task registers every file it writes. Files written before the index
 existed (by version 0.1, or by another process into the same folders) are
-registered by the indexing, which reads each one once:
+registered by the indexing, which reads each one once.
+
+There is no manual step: the first time the archive of a table is listed in
+the admin, if the table was never indexed (e.g. right after the upgrade) or
+has files indexed by another field (its ordering changed), the admin queues
+the indexing task (`parquet_archive.index_files`, which needs a celery worker)
+and warns that the listing may be missing files for a few minutes. It is
+queued once; a request pending for more than an hour is queued again. The
+indexing can also run at any time:
 
 - in the admin, *Parquet archive → Archive policies*, action *Index the
   archive files of the selected tables* (superusers only);
 - or the celery task `parquet_archive.index_files`, which also takes
-  `model_names`.
+  `model_names` and can be scheduled to pick up files changed in the storage
+  by other processes.
 
-The indexing also removes the files that are no longer in the storage, and
-can run again at any time. A file that cannot be read is skipped with an
-error in the log. While a policy with an index field has never been indexed,
-the admin warns that the listing may be missing files. It also warns about
-the files left out of the listing: those indexed by another field (the
-ordering of the policy changed, until the next indexing) and those without
-the index field (written before it was saved).
+The indexing also removes the files that are no longer in the storage. A file
+that cannot be read is skipped with an error in the log. Files without the
+index field (written before it was saved) are left out of the listing, with a
+warning.
 
 A file removed from the storage outside the library is still in the index
 until the next indexing: the admin pages that read it show an error message
@@ -200,8 +206,9 @@ Tables without an index field read every file on every page.
 The daily folders (`partition_field`) were replaced by the index of the
 archive files: new files go straight into the model folder, and the files
 already in daily folders keep being read. After upgrading, run
-`python manage.py migrate parquet_archive` and the indexing of each policy
-(see *Index of the archive files*). The `partition_field` key left in a
+`python manage.py migrate parquet_archive`. The files already archived are
+indexed the first time the archive is listed in the admin (see *Index of the
+archive files*). The `partition_field` key left in a
 policy config is ignored, and saving the policy in the admin removes it: for
 the admin to keep reading only the files of each page, start the ordering of
 the policy with that field (it must not accept null).

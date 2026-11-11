@@ -14,5 +14,8 @@ def archive_tables_task(model_names=None):
 
 @shared_task(name='parquet_archive.index_files')
 def index_files_task(model_names=None):
-    """Indexing of the archive files (see index_files), run from the archive policies admin."""
+    """
+    Indexing of the archive files (see index_files). The admin queues it
+    when a table needs it, and also from the action of the archive policies.
+    """
     index_files(model_names)

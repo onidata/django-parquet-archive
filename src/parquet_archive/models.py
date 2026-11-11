@@ -1,4 +1,5 @@
 import operator
+from datetime import timedelta
 from functools import reduce
 
 from dateutil.relativedelta import relativedelta
@@ -6,11 +7,13 @@ from dateutil.relativedelta import relativedelta
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import FieldDoesNotExist
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from parquet_archive.schema import to_polars_schema
+
+INDEXING_RETRY_AFTER = timedelta(hours=1)
 
 
 class ArchivePolicy(models.Model):
@@ -58,6 +61,13 @@ class ArchivePolicy(models.Model):
         editable=False,
         help_text=_('Last run of the indexing of the archive files, which the admin needs to list all of them.')
     )
+    indexing_requested_at = models.DateTimeField(
+        _('indexing requested at'),
+        null=True,
+        blank=True,
+        editable=False,
+        help_text=_('When the admin last queued the indexing of the archive files by itself.')
+    )
 
     class Meta:
         verbose_name = _('archive policy')
@@ -77,6 +87,22 @@ class ArchivePolicy(models.Model):
 
         cutoff = timezone.now() - relativedelta(**{row_filter['unit']: row_filter['keep_for']})
         return reduce(operator.or_, (Q(**{f'{field}__lte': cutoff}) for field in row_filter['fields']))
+
+    def claim_indexing(self):
+        """
+        Marks the indexing of the archive files as requested, unless a request
+        is still pending (newer than INDEXING_RETRY_AFTER and not finished
+        yet). Returns whether it marked, so concurrent requests queue the
+        indexing only once.
+        """
+        now = timezone.now()
+        claimable = (
+            Q(indexing_requested_at__isnull=True)
+            | Q(indexing_requested_at__lt=now - INDEXING_RETRY_AFTER)
+            | Q(indexed_at__gte=F('indexing_requested_at'))
+        )
+        claimed = ArchivePolicy.objects.filter(claimable, pk=self.pk).update(indexing_requested_at=now)
+        return bool(claimed)
 
     @classmethod
     def get_with_index_field(cls, model):

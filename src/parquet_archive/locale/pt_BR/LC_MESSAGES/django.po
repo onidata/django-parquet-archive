@@ -37,26 +37,11 @@ msgstr "Exibindo registros do backup frio (arquivos parquet), somente para consu
 
 
 msgid ""
-"The archive files of this table were not indexed yet, so the listing may be "
-"missing some of them. Index them in the archive policies."
+"The archive files of this table are being indexed, so the listing may be "
+"missing some of them for a few minutes."
 msgstr ""
-"Os arquivos do backup frio desta tabela ainda não foram indexados, então a "
-"listagem pode estar incompleta. Indexe-os nas configurações de backup frio."
-
-#, python-format
-msgid ""
-"%(count)s archive file of this table was indexed by another field and is "
-"not listed. Index it again in the archive policies."
-msgid_plural ""
-"%(count)s archive files of this table were indexed by another field and are "
-"not listed. Index them again in the archive policies."
-msgstr[0] ""
-"%(count)s arquivo do backup frio desta tabela foi indexado por outro campo e "
-"não aparece na listagem. Indexe-o de novo nas configurações de backup frio."
-msgstr[1] ""
-"%(count)s arquivos do backup frio desta tabela foram indexados por outro "
-"campo e não aparecem na listagem. Indexe-os de novo nas configurações de "
-"backup frio."
+"Os arquivos do backup frio desta tabela estão sendo indexados, então a "
+"listagem pode ficar incompleta por alguns minutos."
 
 #, python-format
 msgid "%(count)s archive file of this table has no %(field)s and is not listed."
@@ -281,6 +266,14 @@ msgstr "configurações de backup frio"
 
 msgid "files indexed at"
 msgstr "arquivos indexados em"
+
+msgid "indexing requested at"
+msgstr "indexação pedida em"
+
+msgid "When the admin last queued the indexing of the archive files by itself."
+msgstr ""
+"Quando o admin pediu por conta própria, pela última vez, a indexação dos "
+"arquivos do backup frio."
 
 msgid ""
 "Last run of the indexing of the archive files, which the admin needs to list "
