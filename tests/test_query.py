@@ -1,7 +1,7 @@
 import io
 import posixpath
 import tempfile
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -15,10 +15,12 @@ from django.core.files.base import ContentFile
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
-from parquet_archive.archive import archive_tables
+from parquet_archive.archive import archive_tables, index_files
 from parquet_archive.conf import get_storage
+from parquet_archive.models import ArchiveFile
 from parquet_archive.query import (
-    FILE_COLUMN, ArchiveFolder, ArchiveQuery, UnsupportedLookup, _s3_storage_options, period_bounds
+    FILE_COLUMN, ArchiveFolder, ArchiveQuery, FileGroup, IndexedQuery, UnsupportedLookup, _s3_storage_options,
+    file_groups, period_bounds
 )
 from tests.base import API_REQUEST_CONFIG, ArchivedRequestsMixin, ArchiveStorageMixin, create_policy
 from tests.example.models import ApiRequest, Customer
@@ -215,19 +217,20 @@ class ArchiveFolderS3Test(TestCase):
                 's3://bucket/prefix/apirequest/b.parquet',
             ],
             storage_options=_s3_storage_options(FakeS3Storage()),
+            schema=None,
             missing_columns='insert',
             extra_columns='ignore',
             include_file_paths=FILE_COLUMN,
         )
 
-    def test_reads_only_the_subfolders_of_the_given_days(self, scan_parquet):
-        ArchiveFolder(ApiRequest).load('requested_at', {date(2026, 1, 1)})
+    def test_reads_with_the_given_schema(self, scan_parquet):
+        schema = {'id': pl.String, 'status_code': pl.Int64}
+        folder = ArchiveFolder(ApiRequest, schema)
 
-        expected = [
-            's3://bucket/prefix/apirequest/requested_at=2026-01-01/20260101T000000_a.parquet',
-            's3://bucket/prefix/apirequest/b.parquet',
-        ]
-        self.assertEqual(scan_parquet.call_args.args[0], expected)
+        folder.read(folder.sources(['b.parquet']))
+
+        self.assertEqual(scan_parquet.call_args.args[0], ['s3://bucket/prefix/apirequest/b.parquet'])
+        self.assertEqual(scan_parquet.call_args.kwargs['schema'], schema)
 
 
 @patch('parquet_archive.query._s3_storage_options', return_value=None)
@@ -271,25 +274,31 @@ class QueryWithoutPrimaryKeyTest(ArchiveStorageMixin, TestCase):
 
 class ArchiveFolderTest(ArchivedRequestsMixin, TestCase):
 
-    def test_subfolder_days_from_newest_to_oldest(self):
-        folder = ArchiveFolder(ApiRequest)
-
-        days = [timezone.localdate(request.requested_at) for request in reversed(self.old_requests)]
-        self.assertEqual(folder.days('requested_at'), days)
-        self.assertEqual(folder.days('reference_date'), [])
-
-    def test_paths_of_the_given_days_subfolders_and_of_the_model_folder(self):
+    def test_paths_of_the_model_folder_and_of_its_subfolders(self):
         storage = get_storage()
         storage.save('apirequest/old.parquet', ContentFile(b''))
-        storage.save('apirequest/reference_date=2025-01-01/20250101T000000_x.parquet', ContentFile(b''))
-        day = timezone.localdate(self.old_requests[1].requested_at)
+        storage.save('apirequest/requested_at=2025-01-01/20250101T000000_x.parquet', ContentFile(b''))
 
-        paths = ArchiveFolder(ApiRequest).paths('requested_at', {day})
+        paths = ArchiveFolder(ApiRequest).paths()
 
-        self.assertEqual(
-            sorted(posixpath.dirname(path) for path in paths),
-            ['', 'reference_date=2025-01-01', f'requested_at={day}']
-        )
+        self.assertEqual(sorted(posixpath.dirname(path) for path in paths), ['', '', '', 'requested_at=2025-01-01'])
+
+    def test_files_without_columns_of_the_schema_get_them_empty(self):
+        folder = ArchiveFolder(ApiRequest, {'id': pl.String, 'status_code': pl.Int64, 'gone': pl.String})
+        paths = folder.paths()
+
+        frame = folder.read(folder.sources(paths)).collect()
+
+        self.assertEqual(frame.columns, ['id', 'status_code', 'gone', FILE_COLUMN])
+        self.assertEqual(frame['gone'].to_list(), [None] * 3)
+        self.assertEqual(sorted(frame['id'].to_list()), sorted(str(request.id) for request in self.old_requests))
+
+    def test_reading_no_file_returns_an_empty_frame(self):
+        self.assertEqual(ArchiveFolder(ApiRequest).read([]).collect().height, 0)
+
+
+def utc(*args):
+    return datetime(*args, tzinfo=dt_timezone.utc)
 
 
 class PeriodBoundsTest(SimpleTestCase):
@@ -297,19 +306,107 @@ class PeriodBoundsTest(SimpleTestCase):
     @parameterized.expand([
         ('date_gte_lt', 'reference_date',
          {'reference_date__gte': ['2026-06-10'], 'reference_date__lt': ['2026-06-16']},
-         (date(2026, 6, 10), date(2026, 6, 15))),
+         (utc(2026, 6, 10, 3), utc(2026, 6, 16, 3))),
         ('date_exact_with_several_values', 'reference_date', {'reference_date': ['2026-06-12', '2026-06-10']},
-         (date(2026, 6, 10), date(2026, 6, 12))),
-        ('date_lte', 'reference_date', {'reference_date__lte': ['2026-06-15']}, (None, date(2026, 6, 15))),
-        ('datetime_midnight', 'requested_at',
-         {'requested_at__gte': ['2026-06-10 00:00:00-03:00'], 'requested_at__lt': ['2026-06-16 00:00:00-03:00']},
-         (date(2026, 6, 10), date(2026, 6, 15))),
-        ('datetime_lt_with_time', 'requested_at', {'requested_at__lt': ['2026-06-16 10:00:00-03:00']},
-         (None, date(2026, 6, 16))),
-        ('datetime_in_project_time_zone', 'requested_at', {'requested_at__gte': ['2026-06-10 01:00:00+00:00']},
-         (date(2026, 6, 9), None)),
+         (utc(2026, 6, 10, 3), utc(2026, 6, 13, 3))),
+        ('date_lte_and_gt', 'reference_date',
+         {'reference_date__lte': ['2026-06-15'], 'reference_date__gt': ['2026-06-01']},
+         (utc(2026, 6, 2, 3), utc(2026, 6, 16, 3))),
+        ('datetime_gte_lt', 'requested_at',
+         {'requested_at__gte': ['2026-06-10 00:00:00-03:00'], 'requested_at__lt': ['2026-06-16 10:00:00+00:00']},
+         (utc(2026, 6, 10, 3), utc(2026, 6, 16, 10))),
+        ('datetime_lte_and_gt_take_the_next_microsecond', 'requested_at',
+         {'requested_at__gt': ['2026-06-10 03:00:00+00:00'], 'requested_at__lte': ['2026-06-16 10:00:00+00:00']},
+         (utc(2026, 6, 10, 3, 0, 0, 1), utc(2026, 6, 16, 10, 0, 0, 1))),
+        ('naive_datetime_in_the_current_time_zone', 'requested_at', {'requested_at__gte': ['2026-06-10']},
+         (utc(2026, 6, 10, 3), None)),
         ('ignores_other_fields_and_lookups', 'reference_date',
-         {'status_code__gte': ['1'], 'reference_date__isnull': ['True']}, (None, None))]
+         {'status_code__gte': ['1'], 'reference_date__isnull': ['True'], 'reference_date__year': ['2026']},
+         (None, None))]
     )
     def test_period_bounds(self, _, field, lookups, bounds):
         self.assertEqual(period_bounds(ApiRequest._meta.get_field(field), lookups), bounds)
+
+
+def archive_file(path, min_date, max_date, rows=1):
+    return SimpleNamespace(path=path, rows=rows, min_date=min_date, max_date=max_date)
+
+
+class FileGroupsTest(SimpleTestCase):
+
+    def test_groups_the_files_whose_ranges_overlap(self):
+        files = [
+            archive_file('a', utc(2026, 6, 9), utc(2026, 6, 10)),
+            archive_file('b', utc(2026, 6, 5), utc(2026, 6, 9)),
+            archive_file('c', utc(2026, 6, 6), utc(2026, 6, 7), rows=2),
+            archive_file('d', utc(2026, 6, 1), utc(2026, 6, 4)),
+        ]
+
+        self.assertEqual(file_groups(files), [
+            FileGroup(files[:3], 4, utc(2026, 6, 5), utc(2026, 6, 10)),
+            FileGroup(files[3:], 1, utc(2026, 6, 1), utc(2026, 6, 4)),
+        ])
+
+
+class IndexedQueryTest(ArchiveStorageMixin, TestCase):
+    """9 requests in 5 files of 2 rows, plus a late file that overlaps two of them."""
+
+    def setUp(self):
+        super().setUp()
+        create_policy()
+        start = timezone.now() - relativedelta(months=4)
+        for days in range(9):
+            ApiRequest.objects.create(requested_at=start - timedelta(days=days * 3), status_code=days)
+        archive_tables()
+        self.late = uuid4()
+        late_file = io.BytesIO()
+        pl.DataFrame({
+            'id': [str(self.late)], 'requested_at': [start - timedelta(days=7)], 'status_code': [100],
+            'success': [False],
+        }).write_parquet(late_file)
+        get_storage().save('apirequest/20250101T000000_late.parquet', ContentFile(late_file.getvalue()))
+        index_files()
+        self.files = list(
+            ArchiveFile.objects.order_by('-max_date').values_list('path', 'rows', 'min_date', 'max_date', named=True)
+        )
+        newest = sorted(file.path for file in self.files)[-1]
+        self.folder = ArchiveFolder(ApiRequest, ArchiveFolder(ApiRequest).read_schema(newest))
+
+    def _ids(self, rows):
+        return [row.id for row in rows]
+
+    @parameterized.expand([('descending', ['-requested_at', '-pk']), ('ascending', ['requested_at', 'pk'])])
+    def test_pages_follow_the_order_of_every_row(self, _, ordering):
+        expected = self._ids(ArchiveQuery(ApiRequest).sort(ordering))
+        query = IndexedQuery(ApiRequest, self.folder, self.files, ordering=ordering)
+
+        self.assertEqual(query.count(), 10)
+        self.assertIn(2, [len(group.files) for group in file_groups(self.files)])
+        for start in range(0, 12, 3):
+            with self.subTest(start=start):
+                self.assertEqual(self._ids(query[start:start + 3]), expected[start:start + 3])
+        self.assertEqual(self._ids(query), expected)
+
+    def test_counts_by_the_index_and_reads_only_the_files_of_the_page(self):
+        query = IndexedQuery(ApiRequest, self.folder, self.files, ordering=['-requested_at', '-pk'])
+
+        with patch.object(ArchiveFolder, 'read', autospec=True, side_effect=ArchiveFolder.read) as read:
+            self.assertEqual(query.count(), 10)
+            read.assert_not_called()
+            query[0:2]
+
+        sources = {source for call in read.call_args_list for source in call.args[1]}
+        self.assertEqual(sources, {self.files[0].path})
+
+    def test_period_counts_the_groups_on_its_edges_by_reading_them(self):
+        lookups = {
+            'requested_at__gte': [str(self.files[2].min_date)], 'requested_at__lt': [str(self.files[0].max_date)]
+        }
+        period = period_bounds(ApiRequest._meta.get_field('requested_at'), lookups)
+        files = [file for file in self.files if file.max_date >= period[0] and file.min_date < period[1]]
+        expected = self._ids(ArchiveQuery(ApiRequest).apply_lookups(lookups).sort(['-requested_at', '-pk']))
+
+        query = IndexedQuery(ApiRequest, self.folder, files, period, lookups, ['-requested_at', '-pk'])
+
+        self.assertEqual(query.count(), len(expected))
+        self.assertEqual(self._ids(query), expected)

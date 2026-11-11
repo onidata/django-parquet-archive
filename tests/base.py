@@ -14,7 +14,6 @@ from tests.example.models import ApiRequest, Customer
 
 API_REQUEST_CONFIG = {
     'rows_per_file': 2,
-    'partition_field': 'requested_at',
     'filter': {'fields': ['requested_at'], 'keep_for': 3, 'unit': 'months'},
     'ordering': ['-requested_at'],
     'schema': {
@@ -58,12 +57,12 @@ class ArchiveStorageMixin:
 
 
 class ArchivedRequestsMixin(ArchiveStorageMixin):
-    """3 requests moved to the archive and 1 recent one that stays in the database."""
+    """3 requests moved to the archive (in 2 files) and 1 recent one that stays in the database."""
 
     archive_config = API_REQUEST_CONFIG
 
     def setUp(self):
-        from parquet_archive.archive import archive_tables
+        from parquet_archive.archive import archive_tables, index_files
 
         super().setUp()
         create_policy(config=self.archive_config)
@@ -85,3 +84,4 @@ class ArchivedRequestsMixin(ArchiveStorageMixin):
         ]
         self.recent = ApiRequest.objects.create(requested_at=now - relativedelta(days=1), method='get')
         archive_tables()
+        index_files()

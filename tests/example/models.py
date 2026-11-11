@@ -66,3 +66,8 @@ class Order(models.Model):
 
 class Attachment(models.Model):
     order = models.ForeignKey(Order, on_delete=OnDeleteGuard(models.CASCADE), related_name='attachments')
+
+
+class Payment(models.Model):
+    paid_on = models.DateField()
+    description = models.CharField(max_length=100, blank=True)

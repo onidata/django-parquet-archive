@@ -1,11 +1,13 @@
 import json
 import operator
 import posixpath
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from functools import reduce
 
 import polars as pl
 
+from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models.constants import LOOKUP_SEP
 from django.utils import timezone
@@ -13,7 +15,7 @@ from django.utils.text import smart_split, unescape_string_literal
 
 from parquet_archive.conf import get_storage
 from parquet_archive.schema import (
-    day_of, model_folder, parse_day_folder, polars_type_for_field, sort_newest_first, to_polars_schema
+    index_value, model_folder, polars_type_for_field, sort_newest_first, to_polars_schema
 )
 
 try:
@@ -69,58 +71,59 @@ SEARCH_PREFIXES = {'^': 'istartswith', '=': 'iexact', '@': 'icontains'}
 # NOTE: Source file of each row, so pagination rereads only the files of the page
 FILE_COLUMN = '_parquet_archive_file'
 
+# NOTE: A missing or unreadable file fails with OSError in the Django storage and with a polars error on S3
+READ_ERRORS = (OSError, pl.exceptions.PolarsError)
+
 
 class UnsupportedLookup(Exception):
     """Admin lookup that cannot be applied to the archive columns."""
 
 
 class ArchiveFolder:
-    """Archive parquet files of a model: those in its folder and those in the day subfolders."""
+    """Archive parquet files of a model: those in its folder and in its subfolders (daily folders of version 0.1)."""
 
-    def __init__(self, model):
+    def __init__(self, model, schema=None):
         self.model = model
         self.storage = get_storage()
         self.folder = model_folder(model)
         self.is_s3 = S3Boto3Storage is not None and isinstance(self.storage, S3Boto3Storage)
+        # NOTE: Columns of every read: files without some of them get them empty, instead of following the first file
+        self.schema = schema
 
+    def paths(self):
+        """Parquet files of the folder and of its subfolders, from newest to oldest."""
         # NOTE: On S3 the folder does not really exist (exists is always false) and listdir of an empty prefix does
         # not fail
-        self.subfolders, self.files = [], []
-        if self.is_s3 or self.storage.exists(self.folder):
-            self.subfolders, self.files = self.storage.listdir(self.folder)
+        if not self.is_s3 and not self.storage.exists(self.folder):
+            return []
 
-    def days(self, field):
-        """Days with a subfolder of the field, from newest to oldest."""
-        return sorted(
-            (day for subfolder_field, day in map(parse_day_folder, self.subfolders) if subfolder_field == field),
-            reverse=True
-        )
-
-    def paths(self, field=None, days=()):
-        """
-        Parquet files of the model folder and of the subfolders, from newest to
-        oldest. With field, only the subfolders of the given days are included
-        (and listed) among that field's subfolders.
-        """
-        paths = list(self.files)
-        for subfolder in self.subfolders:
-            subfolder_field, day = parse_day_folder(subfolder)
-            if field is None or subfolder_field != field or day in days:
-                _, files = self.storage.listdir(f'{self.folder}/{subfolder}')
-                paths += [f'{subfolder}/{file}' for file in files]
+        subfolders, files = self.storage.listdir(self.folder)
+        paths = list(files)
+        for subfolder in subfolders:
+            _, files = self.storage.listdir(f'{self.folder}/{subfolder}')
+            paths += [f'{subfolder}/{file}' for file in files]
         return sort_newest_first(path for path in paths if path.endswith('.parquet'))
 
-    def load(self, field=None, days=()):
-        """LazyFrame with the files of paths(field, days)."""
-        paths = self.paths(field, days)
-        if not paths:
-            return pl.LazyFrame(schema={**_model_schema(self.model), FILE_COLUMN: pl.String})
+    def sources(self, paths):
+        """What read() takes for each path: on S3 the URL in the bucket, otherwise the path itself."""
+        if not self.is_s3:
+            return list(paths)
+        return [
+            f's3://{self.storage.bucket_name}/{posixpath.join(self.storage.location, self.folder, path)}'
+            for path in paths
+        ]
+
+    def load(self):
+        """LazyFrame with every file of the folder."""
+        return self.read(self.sources(self.paths()))
+
+    def read_schema(self, path):
+        """Columns of one file, read from its footer."""
+        source = self.sources([path])[0]
         if self.is_s3:
-            paths = [
-                f's3://{self.storage.bucket_name}/{posixpath.join(self.storage.location, self.folder, path)}'
-                for path in paths
-            ]
-        return self.read(paths)
+            return pl.scan_parquet(source, storage_options=_s3_storage_options(self.storage)).collect_schema()
+        with self.storage.open(f'{self.folder}/{source}', 'rb') as parquet_file:
+            return pl.read_parquet_schema(parquet_file)
 
     def read(self, sources):
         """
@@ -129,10 +132,13 @@ class ArchiveFolder:
         the parts the query needs. Other storages (e.g. in tests) open the
         files through the Django storage.
         """
+        if not sources:
+            return pl.LazyFrame(schema={**(self.schema or _model_schema(self.model)), FILE_COLUMN: pl.String})
         if self.is_s3:
             return pl.scan_parquet(
                 sources,
                 storage_options=_s3_storage_options(self.storage),
+                schema=self.schema,
                 missing_columns='insert',
                 extra_columns='ignore',
                 include_file_paths=FILE_COLUMN,
@@ -141,35 +147,84 @@ class ArchiveFolder:
         frames = []
         for source in sources:
             with self.storage.open(f'{self.folder}/{source}', 'rb') as parquet_file:
-                frames.append(pl.read_parquet(parquet_file).with_columns(pl.lit(source).alias(FILE_COLUMN)))
+                frame = pl.read_parquet(parquet_file)
+            if self.schema is not None:
+                frame = frame.select(
+                    pl.col(name) if name in frame.columns else pl.lit(None, dtype).alias(name)
+                    for name, dtype in self.schema.items()
+                )
+            frames.append(frame.with_columns(pl.lit(source).alias(FILE_COLUMN)))
         return pl.concat(frames, how='diagonal_relaxed').lazy()
+
+
+RANGE_LOOKUPS = ('', 'exact', 'gt', 'gte', 'lt', 'lte')
+
+
+def index_range(value):
+    """
+    Start (inclusive) and end (exclusive) of a date or datetime value, as
+    saved in ArchiveFile: a whole day for a date, a microsecond for a datetime.
+    """
+    if isinstance(value, datetime):
+        low = timezone.make_aware(value) if settings.USE_TZ and timezone.is_naive(value) else value
+        return low, low + timedelta(microseconds=1)
+    return index_value(value), index_value(value + timedelta(days=1))
 
 
 def period_bounds(field, lookups):
     """
-    First and last day (inclusive, in the project time zone) that the admin
-    lookups on the date field let through, or None for a bound they do not
-    restrict. Combined lookups become the period that covers all of them.
+    Start (inclusive) and end (exclusive) of the period that the admin
+    lookups on the date field let through, as saved in ArchiveFile (see
+    index_value), or None for a bound they do not restrict. Several values
+    become the period that covers all of them.
     """
     start = end = None
     for lookup, values in lookups.items():
         name, _, lookup_type = lookup.partition(LOOKUP_SEP)
-        if name != field.attname or lookup_type not in ('', 'exact', 'gt', 'gte', 'lt', 'lte'):
+        if name != field.attname or lookup_type not in RANGE_LOOKUPS:
             continue
 
         for value in values if isinstance(values, (list, tuple)) else [values]:
             value = field.to_python(value)
             if value is None:
                 continue
-            if lookup_type == 'lt':
-                value -= timedelta(microseconds=1) if isinstance(value, datetime) else timedelta(days=1)
 
-            day = day_of(value)
-            if lookup_type in ('', 'exact', 'gt', 'gte'):
-                start = day if start is None else min(start, day)
+            low, high = index_range(value)
+            if lookup_type in ('', 'exact', 'gte', 'gt'):
+                bound = high if lookup_type == 'gt' else low
+                start = bound if start is None else min(start, bound)
             if lookup_type in ('', 'exact', 'lt', 'lte'):
-                end = day if end is None else max(end, day)
+                bound = low if lookup_type == 'lt' else high
+                end = bound if end is None else max(end, bound)
     return start, end
+
+
+@dataclass
+class FileGroup:
+    """Archive files whose ranges of the index field overlap."""
+
+    files: list
+    rows: int
+    min_date: datetime
+    max_date: datetime
+
+
+def file_groups(files):
+    """
+    Groups of the files (ArchiveFile rows, from the newest max_date), from
+    newest to oldest. Groups do not overlap, so the order of the rows follows
+    the order of the groups and a page only reads the groups it shows.
+    """
+    groups = []
+    for file in files:
+        if groups and file.max_date >= groups[-1].min_date:
+            group = groups[-1]
+            group.files.append(file)
+            group.rows += file.rows
+            group.min_date = min(group.min_date, file.min_date)
+        else:
+            groups.append(FileGroup([file], file.rows, file.min_date, file.max_date))
+    return groups
 
 
 def _model_schema(model):
@@ -393,6 +448,74 @@ class ArchiveQuery:
         sources = sort_newest_first(keys[FILE_COLUMN].unique())
         rows = self.folder.read(sources).filter(pl.col(pk).is_in(keys[pk].implode())).collect(engine='streaming')
         return self._instances(keys.join(rows, on=[pk, FILE_COLUMN], how='left', maintain_order='left'))
+
+    def _clone(self):
+        # NOTE: ChangeList uses _clone() to show every result at once
+        return list(self)
+
+
+class IndexedQuery:
+    """Archive rows sorted by the index field, read only from the groups of files (file_groups) of each page."""
+
+    ordered = True
+
+    def __init__(self, model, folder, files, period=(None, None), lookups=None, ordering=()):
+        """
+        Counts the groups inside the period by the rows saved in the index
+        and reads only those on its edges. The lookups must be on the index
+        field alone and the ordering must start with it. Implements the same
+        minimal QuerySet interface as ArchiveQuery.
+        """
+        self.model = model
+        self.folder = folder
+        self.period = period
+        self.lookups = lookups or {}
+        self.ordering = list(ordering)
+        self.columns = {**(folder.schema or {}), FILE_COLUMN: pl.String}
+        groups = file_groups(files)
+        self.groups = groups if not ordering or ordering[0].startswith('-') else groups[::-1]
+        self._counts = None
+
+    def _query(self, group):
+        sources = sort_newest_first(self.folder.sources(file.path for file in group.files))
+        query = ArchiveQuery(self.model, self.folder, self.folder.read(sources), self.columns)
+        return query.apply_lookups(self.lookups).sort(self.ordering)
+
+    def _is_inside_the_period(self, group):
+        start, end = self.period
+        return (start is None or group.min_date >= start) and (end is None or group.max_date < end)
+
+    def _group_counts(self):
+        if self._counts is None:
+            self._counts = [
+                group.rows if self._is_inside_the_period(group) else self._query(group).count()
+                for group in self.groups
+            ]
+        return self._counts
+
+    def count(self):
+        return sum(self._group_counts())
+
+    def __len__(self):
+        return self.count()
+
+    def __iter__(self):
+        return iter(self[0:None])
+
+    def __getitem__(self, index):
+        if not isinstance(index, slice):
+            return self[index:index + 1][0]
+
+        start = index.start or 0
+        stop = self.count() if index.stop is None else index.stop
+        rows, offset = [], 0
+        for group, count in zip(self.groups, self._group_counts()):
+            if offset >= stop:
+                break
+            if offset + count > start:
+                rows += self._query(group)[max(start - offset, 0):min(stop, offset + count) - offset]
+            offset += count
+        return rows
 
     def _clone(self):
         # NOTE: ChangeList uses _clone() to show every result at once

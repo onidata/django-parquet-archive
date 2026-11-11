@@ -1,10 +1,11 @@
 import posixpath
 import re
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import datetime, time, timezone as dt_timezone
 from uuid import uuid4
 
 import polars as pl
 
+from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.db import models
 from django.db.models.constants import LOOKUP_SEP
@@ -57,8 +58,6 @@ BLOCKING_ON_DELETE = (models.CASCADE, models.PROTECT, models.RESTRICT)
 
 TIMESTAMPED_FILE_REGEX = re.compile(r'^\d{8}T\d{6}_')
 
-DAY_FOLDER_REGEX = re.compile(r'^(?P<field>\w+)=(?P<day>\d{4}-\d{2}-\d{2})$')
-
 
 def model_folder(model):
     """Folder of the model's parquet files in the storage: the class name in lowercase."""
@@ -68,27 +67,26 @@ def model_folder(model):
 def day_of(value):
     """Day of a DateField or DateTimeField value, in the project time zone (TIME_ZONE)."""
     if isinstance(value, datetime):
-        # NOTE: The default time zone and not the one active in the request, otherwise the same row would move folders
+        # NOTE: The default time zone and not the one active in the request, otherwise the days of the date filter
+        # would change with the user's time zone
         return timezone.localdate(value, timezone.get_default_timezone()) if timezone.is_aware(value) else value.date()
     return value
 
 
-def day_folder(folder, field, value):
-    """
-    Day subfolder for a value of the date field (e.g. apirequest/requested_at=2026-06-28),
-    in the project time zone (TIME_ZONE). Rows without a date go straight into the model folder.
-    """
-    if value is None:
-        return folder
-    return f'{folder}/{field}={day_of(value).isoformat()}'
+def start_of_day(day):
+    """Midnight of the day in the project time zone, aware when USE_TZ is on."""
+    midnight = datetime.combine(day, time.min)
+    return timezone.make_aware(midnight, timezone.get_default_timezone()) if settings.USE_TZ else midnight
 
 
-def parse_day_folder(subfolder):
-    """Field and day of a day subfolder (e.g. 'date=2026-06-15'), or (None, None) for other folders."""
-    match = DAY_FOLDER_REGEX.match(subfolder)
-    if match is None:
-        return None, None
-    return match['field'], date.fromisoformat(match['day'])
+def index_value(value):
+    """
+    Value of the index field as saved in ArchiveFile, which only has
+    datetimes: a date becomes its midnight in the project time zone.
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    return start_of_day(value)
 
 
 def new_parquet_path(folder):

@@ -4,10 +4,12 @@ import polars as pl
 
 from dateutil.relativedelta import relativedelta
 from freezegun import freeze_time
+from parameterized import parameterized
 
 from django.test import TestCase
 from django.utils import timezone
 
+from parquet_archive.models import ArchivePolicy
 from tests.base import API_REQUEST_CONFIG, create_policy
 from tests.example.models import ApiRequest
 
@@ -19,7 +21,7 @@ class ArchivePolicyTest(TestCase):
 
         self.assertIs(info['model'], ApiRequest)
         self.assertEqual(info['rows_per_file'], 2)
-        self.assertEqual(info['partition_field'], 'requested_at')
+        self.assertEqual(info['index_field'], 'requested_at')
         self.assertEqual(info['ordering'], ['-requested_at'])
         self.assertEqual(info['schema']['id'], pl.String)
         self.assertEqual(info['schema']['amount'], pl.Decimal(precision=14, scale=2))
@@ -51,15 +53,47 @@ class ArchivePolicyTest(TestCase):
         with self.assertRaises(ValueError):
             policy.get_filter()
 
-    def test_partition_field_outside_schema_raises_error(self):
+    @parameterized.expand([
+        ('ascending', ['requested_at', 'status_code']),
+        ('descending', ['-requested_at']),
+    ])
+    def test_index_field_is_the_date_field_of_the_ordering(self, _, ordering):
+        policy = create_policy(config={**API_REQUEST_CONFIG, 'ordering': ordering})
+
+        self.assertEqual(policy.get_index_field(), 'requested_at')
+
+    @parameterized.expand([
+        ('without_ordering', []),
+        ('not_a_date', ['status_code']),
+        ('date_that_accepts_null', ['reference_date']),
+        ('date_only_after_another_field', ['status_code', '-requested_at']),
+        ('date_of_a_relation', ['customer__registered_at']),
+        ('missing_field', ['-gone_at']),
+    ])
+    def test_without_index_field(self, _, ordering):
+        policy = create_policy(config={**API_REQUEST_CONFIG, 'ordering': ordering})
+
+        self.assertIsNone(policy.get_index_field())
+
+    def test_claims_the_indexing_once_while_it_is_pending(self):
+        policy = create_policy()
+
+        self.assertTrue(policy.claim_indexing())
+        self.assertFalse(policy.claim_indexing())
+        self.assertIsNotNone(ArchivePolicy.objects.get().indexing_requested_at)
+
+    @parameterized.expand([
+        ('pending_for_more_than_an_hour', {'indexing_requested_at': timedelta(hours=-2)}),
+        ('finished_after_the_request', {'indexing_requested_at': timedelta(minutes=-5), 'indexed_at': timedelta()}),
+    ])
+    def test_claims_the_indexing_again(self, _, ago):
+        policy = create_policy()
+        ArchivePolicy.objects.update(**{field: timezone.now() + delta for field, delta in ago.items()})
+
+        self.assertTrue(policy.claim_indexing())
+
+    def test_index_field_must_be_saved_in_the_archive(self):
         policy = create_policy()
         del policy.config['schema']['requested_at']
 
-        with self.assertRaises(ValueError):
-            policy.get_archive_info()
-
-    def test_partition_field_is_optional(self):
-        policy = create_policy()
-        del policy.config['partition_field']
-
-        self.assertIsNone(policy.get_archive_info()['partition_field'])
+        self.assertIsNone(policy.get_index_field())
