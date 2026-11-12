@@ -180,9 +180,7 @@ class FakeS3Storage:
     secret_key = 'secret'
     security_token = None
     endpoint_url = 'http://minio:9000'
-    connection = SimpleNamespace(
-        meta=SimpleNamespace(client=SimpleNamespace(meta=SimpleNamespace(region_name='us-east-1')))
-    )
+    region_name = 'sa-east-1'
     FOLDERS = {
         'apirequest': (['requested_at=2026-01-01', 'requested_at=2025-01-01'], ['b.parquet', 'readme.txt']),
         'apirequest/requested_at=2026-01-01': ([], ['20260101T000000_a.parquet']),
@@ -202,10 +200,14 @@ class ArchiveFolderS3Test(TestCase):
         self.assertEqual(_s3_storage_options(FakeS3Storage()), {
             'aws_access_key_id': 'key',
             'aws_secret_access_key': 'secret',
-            'aws_region': 'us-east-1',
+            'aws_region': 'sa-east-1',
             'aws_endpoint_url': 'http://minio:9000',
             'aws_allow_http': 'true',
         })
+
+    @patch.object(FakeS3Storage, 'region_name', None)
+    def test_s3_options_leave_the_region_to_polars_when_the_storage_has_none(self, scan_parquet):
+        self.assertNotIn('aws_region', _s3_storage_options(FakeS3Storage()))
 
     def test_reads_the_parquets_of_the_folder_and_subfolders_straight_from_the_bucket(self, scan_parquet):
         ArchiveFolder(ApiRequest).load()

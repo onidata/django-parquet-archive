@@ -238,7 +238,9 @@ def _s3_storage_options(storage):
         'aws_access_key_id': storage.access_key,
         'aws_secret_access_key': storage.secret_key,
         'aws_session_token': storage.security_token,
-        'aws_region': storage.connection.meta.client.meta.region_name,
+        # NOTE: The configured region and not the one of the boto3 client, which falls back to us-east-1: boto3
+        # follows the redirect to the bucket region and polars does not, but without a region polars asks the bucket
+        'aws_region': storage.region_name,
         'aws_endpoint_url': storage.endpoint_url,
     }
     if storage.endpoint_url and storage.endpoint_url.startswith('http://'):
