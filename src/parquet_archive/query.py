@@ -80,7 +80,7 @@ class UnsupportedLookup(Exception):
 
 
 class ArchiveFolder:
-    """Archive parquet files of a model: those in its folder and in its subfolders (daily folders of version 0.1)."""
+    """Archive parquet files of a model: those in its folder and in its subfolders (older daily folders)."""
 
     def __init__(self, model, schema=None):
         self.model = model

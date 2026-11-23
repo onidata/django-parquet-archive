@@ -135,8 +135,8 @@ policy later show up, and are empty in older files.
 The admin lists the archive from an index in the database (`ArchiveFile`):
 the rows of each file and the first and last value of the index field. The
 archive task registers every file it writes. Files written before the index
-existed (by version 0.1, or by another process into the same folders) are
-registered by the indexing, which reads each one once.
+existed, or by another process into the same folders, are registered by the
+indexing, which reads each one once.
 
 There is no manual step: the first time the archive of a table is listed in
 the admin, if the table was never indexed (e.g. right after the upgrade) or
