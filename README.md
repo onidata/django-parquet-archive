@@ -201,18 +201,6 @@ In tables with an index field, each page reads only the files it needs:
 
 Tables without an index field read every file on every page.
 
-## Upgrading from 0.1
-
-The daily folders (`partition_field`) were replaced by the index of the
-archive files: new files go straight into the model folder, and the files
-already in daily folders keep being read. After upgrading, run
-`python manage.py migrate parquet_archive`. The files already archived are
-indexed the first time the archive is listed in the admin (see *Index of the
-archive files*). The `partition_field` key left in a
-policy config is ignored, and saving the policy in the admin removes it: for
-the admin to keep reading only the files of each page, start the ordering of
-the policy with that field (it must not accept null).
-
 ## Translations
 
 The admin texts are in English, with a Brazilian Portuguese (`pt_BR`)
